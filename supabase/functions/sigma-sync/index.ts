@@ -17,6 +17,8 @@
 // v24 (27/10/2026): un Repaso que SIGMA rechaza con el código 1212 (aplazar un siniestro sin confirmar) se descarta solo.
 // v25 (30/10/2026): un «Documento de Iva pendiente de Validar» en la bitácora posterior a la última comprobación de IVA hace
 //   que ese servicio se compruebe en la pasada siguiente, antes que los demás (antes los libres se miraban cada 6 h).
+// v26 (04/11/2026): un Repaso que SIGMA rechaza por estado 6 «Aplazamiento Pte. Cia./Perito» o 16 «Confirmación o Presupuesto
+//   pendiente de tramitar» se descarta solo, sin error ni aviso (la oficina lo pide de nuevo cuando se desbloquee).
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
 // ?cuenta=VLL → solo esa cuenta.  ?enviar=1 → solo manda a SIGMA los envíos aprobados (sin leer el listado).
 import { createClient, SupabaseClient } from 'npm:@supabase/supabase-js@2.45.4';
@@ -523,6 +525,20 @@ class SinCitaPendiente extends Error {}
 // se descarta solo (decisión del usuario 27/10/2026). El servicio conserva en SIGMA la cita que ya tenía.
 class SinConfirmar extends Error {}
 const SIN_CONFIRMAR = 'Descartado solo: SIGMA no deja aplazar un siniestro sin confirmar (código 1212). En SIGMA sigue la cita que ya tenía el servicio. Si hay que aplazar: primero la Confirmación (sale en esta bandeja tras el informe del operario) y después un Repaso nuevo.';
+// Repaso en un servicio en estado 6 o 16: SIGMA lo rechaza con el motivo como texto en «code» → no es un error, se descarta
+// solo (decisión del usuario 04/11/2026). No se deja en espera: un Repaso no debe salir días después de aprobarlo.
+class BloqueadoPorEstado extends Error {}
+const BLOQUEOS_ESTADO_REPASO: [RegExp, string][] = [
+  [/aplazamiento\s+pte\.?\s+cia/i, '«Aplazamiento Pte. Cia./Perito»'],
+  [/confirmaci[oó]n\s+o\s+presupuesto\s+pendiente\s+de\s+tramitar/i, '«Confirmación o Presupuesto pendiente de tramitar»'],
+];
+function bloqueoEstadoRepaso(codes: { code?: unknown }[] | undefined): string | null {
+  for (const x of codes || []) {
+    const b = BLOQUEOS_ESTADO_REPASO.find(([re]) => re.test(String(x?.code ?? '')));
+    if (b) return `Descartado solo: SIGMA no admite Repaso mientras el servicio esté en ${b[1]}. No se ha enviado el Repaso; cuando se desbloquee, hay que pedir uno nuevo.`;
+  }
+  return null;
+}
 const SIN_CITA = 'Descartado solo: el portal no tiene ninguna cita pendiente de informar en este servicio (ya informada o retirada en SIGMA). No hay nada que enviar.';
 const IVA_PENDIENTE = /documento\s+de\s+iva\s+pendiente/i;
 const BLOQUEO_IVA = 'Bloqueado por SIGMA: documento de IVA pendiente de validar. No se ha enviado el Repaso; usa «Enviar a tramitación» y vuelve a intentarlo cuando SIGMA lo valide.';
@@ -600,12 +616,15 @@ async function enviarRepaso(s: Sesion, e: Envio): Promise<string> {
   if (!ini?.success) {
     console.error('review-initial-data', n, JSON.stringify(ini?.metadata ?? ini).slice(0, 1500));
     if (IVA_PENDIENTE.test(JSON.stringify(ini?.metadata?.errorCodes ?? ini?.metadata ?? ini ?? ''))) throw new IvaPendiente('Documento de IVA pendiente de validar');
+    const bloqueo = bloqueoEstadoRepaso(ini?.metadata?.errorCodes);
+    if (bloqueo) throw new BloqueadoPorEstado(prefijoCitas + bloqueo);
     throw new Error(prefijoCitas + 'Al abrir Repaso: ' + traducirCodigos(ini?.metadata?.errorCodes, ini?.metadata?.message ?? ini?.message));
   }
   try {
     return prefijoCitas + await guardarRepaso(s, e, n, ini, api);
   } catch (err) {
     if (err instanceof SinConfirmar) throw new SinConfirmar(prefijoCitas + (err as Error).message);
+    if (err instanceof BloqueadoPorEstado) throw new BloqueadoPorEstado(prefijoCitas + (err as Error).message);
     if (prefijoCitas && !(err instanceof IvaPendiente)) throw new Error(prefijoCitas + (err as Error).message);
     throw err;
   }
@@ -712,6 +731,8 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
     }
     console.error('review-update', n, JSON.stringify(res?.metadata ?? res).slice(0, 1500));
     if ((res?.metadata?.errorCodes || []).some((x: { code?: unknown }) => String(x?.code) === '1212')) throw new SinConfirmar(SIN_CONFIRMAR);
+    const bloqueo = bloqueoEstadoRepaso(res?.metadata?.errorCodes);
+    if (bloqueo) throw new BloqueadoPorEstado(bloqueo);
     throw new Error('Al guardar Repaso: ' + traducirCodigos(res?.metadata?.errorCodes, res?.metadata?.message ?? res?.message));
   }
   throw new Error('El portal pidió demasiados pasos seguidos: revisa el servicio en el portal');
@@ -1067,7 +1088,8 @@ async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: str
         continue;
       }
       // Aplazamiento en un siniestro sin confirmar (código 1212): se descarta solo, sin error ni aviso (decisión del usuario 27/10/2026)
-      if (err instanceof SinConfirmar && e.tipo === 'repaso') {
+      // Estado 6 o 16: igual (decisión del usuario 04/11/2026). Se relee la ficha para que la oficina vea el bloqueo cuanto antes
+      if ((err instanceof SinConfirmar || err instanceof BloqueadoPorEstado) && e.tipo === 'repaso') {
         await admin.from('sigma_envios').update({ estado: 'descartado', resultado: (err as Error).message }).eq('id', e.id);
         await admin.from('partes').update({ sigma_ficha_en: null }).eq('id', e.parte_id);
         continue;
