@@ -5,7 +5,7 @@
 // · Pueblo = población del servicio sin el código postal, sin tildes ni signos; provincia por el CP (47 / 34).
 //   Si falta la población, o el mapa sitúa el nombre a más de 20 km de su código postal (barrios, urbanizaciones:
 //   «BOMBA», «PINAR DEL PEREGRINO»…), se usa el centro del código postal. Sin población ni CP → «sin ubicar».
-// · Coordenadas: Nominatim (OpenStreetMap), máx. 1 consulta por segundo. Distancia por carretera: OSRM.
+// · Coordenadas: buscador de pueblos de Open-Meteo (GeoNames). Distancia por carretera: OSRM (OpenStreetMap).
 //   Todo se guarda (km_lugares, km_distancias): cada pueblo y cada tramo se consulta una sola vez.
 // · Cuentan todas las visitas planificadas del día (pendiente, hecho y no realizado).
 // · Precio por km de km_tarifas (operario o '*'); se guarda en la línea. Nunca pisa km_manual ni comentario.
@@ -45,16 +45,18 @@ function parada(poblacion: string | null, cp: string | null): Parada {
 }
 
 // ---------------------------------------------------------------- mapas
-let ultimaNom = 0;
-async function nominatim(params: Record<string, string>) {
-  const pausa = 1100 - (Date.now() - ultimaNom);
-  if (pausa > 0) await espera(pausa);
-  ultimaNom = Date.now();
-  const u = new URL('https://nominatim.openstreetmap.org/search');
-  Object.entries({ format: 'json', limit: '5', countrycodes: 'es', 'accept-language': 'es', ...params }).forEach(([k, v]) => u.searchParams.set(k, v));
-  const r = await fetch(u, { headers: { 'User-Agent': UA } });
-  if (!r.ok) throw new Error(`Nominatim ${r.status}`);
-  return (await r.json()) as { lat: string; lon: string; display_name: string; class: string; type: string; addresstype?: string }[];
+// Buscador de pueblos de Open-Meteo (GeoNames): sin clave; admite nombre (sin tildes también) o código postal.
+// (Nominatim responde 403 desde los servidores de Supabase.)
+type Sitio = { name: string; latitude: number; longitude: number; admin1?: string; admin2?: string; feature_code?: string; postcodes?: string[]; country_code?: string };
+async function buscar(texto: string): Promise<Sitio[]> {
+  const u = new URL('https://geocoding-api.open-meteo.com/v1/search');
+  Object.entries({ name: texto, count: '10', language: 'es', countryCode: 'ES', format: 'json' }).forEach(([k, v]) => u.searchParams.set(k, v));
+  for (let i = 0; i < 3; i++) {
+    const r = await fetch(u, { headers: { 'User-Agent': UA } });
+    if (r.ok) return ((await r.json()).results ?? []).filter((x: Sitio) => !x.country_code || x.country_code === 'ES');
+    await espera(1500);
+  }
+  throw new Error('Buscador de pueblos sin respuesta');
 }
 function kmLinea(a: [number, number], b: [number, number]) {
   const R = 6371, r = Math.PI / 180;
@@ -62,28 +64,23 @@ function kmLinea(a: [number, number], b: [number, number]) {
   const h = Math.sin(dLa / 2) ** 2 + Math.cos(a[0] * r) * Math.cos(b[0] * r) * Math.sin(dLo / 2) ** 2;
   return 2 * R * Math.asin(Math.sqrt(h));
 }
-const POBLADO = new Set(['city', 'town', 'village', 'hamlet', 'suburb', 'neighbourhood', 'quarter', 'isolated_dwelling', 'locality', 'municipality', 'residential']);
-
-async function geolocalizar(p: Parada): Promise<Lugar> {
+async function geolocalizar(p: Parada): Promise<Lugar & { encontrado: string | null }> {
   const [nombreClave, pref] = p.clave!.split('|');
   const provincia = pref && PROV[pref] ? PROV[pref] : null;
-  let centroCP: [number, number] | null = null;
-  if (p.cp) {
-    const r = await nominatim({ postalcode: p.cp, country: 'España' });
-    if (r[0]) centroCP = [+r[0].lat, +r[0].lon];
-  }
+  const enProv = (x: Sitio) => provincia ? norm(x.admin2 || '').includes(norm(provincia)) : norm(x.admin1 || '').includes('CASTILLA Y LEON');
+  const desc = (x: Sitio) => `${x.name} (${(x.admin2 || x.admin1 || '').replace(/^Provincia de /, '')}${x.postcodes?.length ? ', ' + x.postcodes.slice(0, 3).join(' ') : ''})`;
+  let centroCP: Sitio | null = null;
+  if (p.cp) centroCP = (await buscar(p.cp)).find((x) => x.postcodes?.includes(p.cp!)) ?? null;
   if (nombreClave !== 'CP') {
-    const q = `${titulo(nombreClave)}, ${provincia ?? 'Castilla y León'}, España`;
-    const res = await nominatim({ q });
-    const buenos = res.filter((x) => POBLADO.has(x.addresstype || '') || POBLADO.has(x.type) || x.class === 'place' || x.class === 'boundary');
-    for (const x of buenos.length ? buenos : res) {
-      const c: [number, number] = [+x.lat, +x.lon];
-      if (centroCP && kmLinea(c, centroCP) > 20) continue; // el nombre no cuadra con su código postal
-      return { clave: p.clave!, nombre: p.nombre, provincia, lat: c[0], lon: c[1], origen: 'nombre', encontrado: x.display_name } as Lugar & { encontrado: string };
+    const res = (await buscar(titulo(nombreClave))).filter(enProv)
+      .sort((a, b) => Number(!!b.postcodes?.includes(p.cp ?? '-')) - Number(!!a.postcodes?.includes(p.cp ?? '-')));
+    for (const x of res) {
+      if (centroCP && kmLinea([x.latitude, x.longitude], [centroCP.latitude, centroCP.longitude]) > 20) continue; // no cuadra con su CP
+      return { clave: p.clave!, nombre: p.nombre, provincia, lat: x.latitude, lon: x.longitude, origen: 'nombre', encontrado: desc(x) };
     }
   }
-  if (centroCP) return { clave: p.clave!, nombre: p.nombre, provincia, lat: centroCP[0], lon: centroCP[1], origen: 'cp', encontrado: `Código postal ${p.cp}` } as Lugar & { encontrado: string };
-  return { clave: p.clave!, nombre: p.nombre, provincia, lat: null, lon: null, origen: 'no_encontrado', encontrado: null } as unknown as Lugar;
+  if (centroCP) return { clave: p.clave!, nombre: p.nombre, provincia, lat: centroCP.latitude, lon: centroCP.longitude, origen: 'cp', encontrado: `CP ${p.cp} → ${desc(centroCP)}` };
+  return { clave: p.clave!, nombre: p.nombre, provincia, lat: null, lon: null, origen: 'no_encontrado', encontrado: null };
 }
 
 async function carretera(a: Lugar, b: Lugar): Promise<number> {
@@ -131,7 +128,7 @@ Deno.serve(async (req) => {
     const lugar = async (p: Parada): Promise<Lugar | null> => {
       if (lugares.has(p.clave!)) return lugares.get(p.clave!)!;
       if (!tiempo()) return null;
-      const l = await geolocalizar(p) as Lugar & { encontrado?: string };
+      const l = await geolocalizar(p);
       lugares.set(l.clave, l);
       if (!prueba) await sql`insert into km_lugares (clave, nombre, provincia, lat, lon, encontrado, origen)
         values (${l.clave}, ${l.nombre}, ${l.provincia}, ${l.lat}, ${l.lon}, ${l.encontrado ?? null}, ${l.origen})
