@@ -178,6 +178,22 @@
   .nota-est{font-size:12px;color:var(--suave);margin:8px 0 0}
   #es-fechas{display:flex;gap:6px;align-items:center}
   @media (max-width:760px){ .bloque{padding:12px} .dg-f{grid-template-columns:minmax(0,1fr) 60px 84px} #es-fechas{flex:1 1 100%} }
+  /* ---------- Kilometraje ---------- */
+  .tabla-km{overflow-x:auto;border:1px solid var(--borde);border-radius:12px;background:#fff;margin-bottom:12px}
+  .tabla-km table{border:0;border-radius:0;font-size:13px}
+  .tabla-km th,.tabla-km td{padding:6px 8px;white-space:nowrap}
+  .tabla-km td.num,.tabla-km th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .tabla-km td.ruta{white-space:normal;min-width:260px;font-size:12.5px;color:var(--suave);line-height:1.6}
+  .tabla-km td.ruta b{color:var(--texto);font-weight:600}
+  .tabla-km input{padding:4px 6px;font-size:13px;border-radius:6px;background:#fff}
+  .tabla-km input.kmm{width:80px;text-align:right}
+  .tabla-km input.com{width:170px}
+  .tabla-km tr.prev td{background:#F7F7F5;color:var(--suave)}
+  .tabla-km tr.corr td.kmc{text-decoration:line-through;color:var(--suave)}
+  .tabla-km tr.tot td{font-weight:700;background:#FAFAF8}
+  #km-fechas{display:flex;gap:6px;align-items:center}
+  #p-kilometraje .bloque .tabla-km{margin:0}
+  @media (max-width:760px){ #km-fechas{flex:1 1 100%} .tabla-km td.ruta{min-width:200px} }
 </style>
 </head>
 <body>
@@ -193,6 +209,7 @@
       <a href="#usuarios" data-p="usuarios">Usuarios</a>
       <a href="#facturacion" data-p="facturacion">Facturación</a>
       <a href="#estadisticas" data-p="estadisticas">Estadísticas</a>
+      <a href="#kilometraje" data-p="kilometraje">Kilometraje</a>
     </nav>
     <span class="esp"></span>
   </header>
@@ -272,6 +289,25 @@
     <section class="bloque"><h3>Servicios nuevos</h3><div id="est-serv"><p class="suave">Cargando…</p></div></section>
     <section class="bloque"><h3>Facturación</h3><div id="est-fac"><p class="suave">Cargando…</p></div></section>
   </main>
+
+  <main id="p-kilometraje" class="pagina ancha oculto">
+    <div class="barra">
+      <h2>Kilometraje</h2>
+      <span class="esp"></span>
+      <button class="sec" onclick="recalcularKm(this)" title="Vuelve a calcular las rutas del periodo elegido">↻ Recalcular</button>
+      <button class="sec" onclick="excelKm()">⬇ Excel</button>
+    </div>
+    <div class="filtros">
+      <select id="km-mes" onchange="$('#km-desde').value='';$('#km-hasta').value='';pintarKm()" title="Mes"></select>
+      <span id="km-fechas"><input type="date" id="km-desde" onchange="$('#km-mes').value='';pintarKm()" title="Desde"><span class="suave">a</span><input type="date" id="km-hasta" onchange="$('#km-mes').value='';pintarKm()" title="Hasta"></span>
+      <select id="km-op" onchange="pintarKm()" title="Operario"></select>
+      <span class="check" style="margin:0;font-size:13px"><input type="checkbox" id="km-prev" onchange="pintarKm()"> Incluir días futuros (previstos)</span>
+    </div>
+    <div id="km-kpis" class="kpis"></div>
+    <section class="bloque"><h3>Por operario</h3><div id="km-ops"></div></section>
+    <div id="km-lista"><p class="suave">Cargando…</p></div>
+    <p class="nota-est" id="km-nota"></p>
+  </main>
 </div>
 
 <div id="modal"></div>
@@ -331,13 +367,14 @@ async function alCambiarSesion(s) {
   irA();
 }
 // ---------- Páginas (Usuarios · Facturación) ----------
-const PAGINAS = ['usuarios', 'facturacion', 'estadisticas'];
+const PAGINAS = ['usuarios', 'facturacion', 'estadisticas', 'kilometraje'];
 function irA() {
   const p = PAGINAS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'usuarios';
   PAGINAS.forEach((x) => $('#p-' + x).classList.toggle('oculto', x !== p));
   document.querySelectorAll('header .menu a').forEach((a) => a.classList.toggle('activo', a.dataset.p === p));
   if (p === 'facturacion') cargarFac();
   if (p === 'estadisticas') cargarEst(true);
+  if (p === 'kilometraje') cargarKm(true);
 }
 window.addEventListener('hashchange', () => { if (yoId) irA(); });
 async function llamar(cuerpo) {
@@ -1143,6 +1180,156 @@ function pintarEst() {
     </div>`;
   grafico('g-fac', B, [{ nombre: 'Liquidado', color: COL.liq, valores: vL }, { nombre: 'No liquidado', color: COL.noliq, valores: vN }], eurEje,
     (i) => tipFila(COL.liq, `Liquidado: ${eur(vL[i])}`) + tipFila(COL.noliq, `No liquidado: ${eur(vN[i])}`) + `<div style="margin-top:3px">Total: <b style="display:inline">${eur(r2(vL[i] + vN[i]))}</b> · ${vNum[i]} servicio${vNum[i] === 1 ? '' : 's'}</div>`);
+}
+
+// =====================================================================
+//  KILOMETRAJE · 04/11/2026
+//  Una línea por operario y día con visitas en Planificación (tabla kilometraje).
+//  Ruta: Valladolid (km 0) → pueblos de las visitas en orden → vuelta a Valladolid; por carretera entre pueblos,
+//  0 km dentro del mismo pueblo. La calcula sola la función «kilometraje» al tocar Planificación (cada 5 min).
+//  Importe = km (o km corregidos) × €/km guardado en la línea (ALEJANDRO 0,15 €; resto 0,20 €, tabla km_tarifas).
+// =====================================================================
+let kmFilas = [], kmTarifas = [], kmCargado = false, canalKm = null;
+const kmFinal = (x) => x.km_manual != null ? Number(x.km_manual) : Number(x.km || 0);
+const kmEur = (x) => r2(kmFinal(x) * Number(x.tarifa ?? tarifaDe(x.operario_id)));
+const km1 = (v) => Number(v || 0).toLocaleString('es-ES', { minimumFractionDigits: 1, maximumFractionDigits: 1 }) + ' km';
+const tarifaDe = (id) => Number((kmTarifas.find((t) => t.clave === id) || kmTarifas.find((t) => t.clave === '*') || { euros_km: 0.2 }).euros_km);
+const eurKm = (v) => Number(v).toLocaleString('es-ES', { minimumFractionDigits: 2, maximumFractionDigits: 3 }) + ' €/km';
+const diaKm = (f) => ['dom', 'lun', 'mar', 'mié', 'jue', 'vie', 'sáb'][new Date(f + 'T12:00:00').getDay()];
+
+async function cargarKm(forzar) {
+  if (kmCargado && !forzar) return pintarKm();
+  const [a, b] = await Promise.all([
+    sb.from('kilometraje').select('*').order('fecha', { ascending: false }).order('operario').limit(10000),
+    sb.from('km_tarifas').select('*'),
+  ]);
+  if (a.error) { $('#km-lista').innerHTML = `<p class="error">No se pudo cargar: ${esc(mensaje(a.error))}</p>`; return; }
+  kmFilas = a.data; kmTarifas = b.data || []; kmCargado = true;
+  if (!$('#km-mes').dataset.ini) { $('#km-mes').dataset.ini = 1; $('#km-mes').value = hoyISO().slice(0, 7); }
+  pintarKm();
+  if (!canalKm) {
+    canalKm = sb.channel('admin-kilometraje').on('postgres_changes', { event: '*', schema: 'public', table: 'kilometraje' }, (ev) => {
+      if (ev.eventType === 'DELETE') kmFilas = kmFilas.filter((x) => x.id !== ev.old.id);
+      else { const i = kmFilas.findIndex((x) => x.id === ev.new.id); if (i >= 0) kmFilas[i] = ev.new; else kmFilas.unshift(ev.new); }
+      if (!$('#p-kilometraje').classList.contains('oculto') && !document.activeElement?.closest?.('#km-lista')) pintarKm();
+    }).subscribe();
+  }
+}
+
+function filtroKm() {
+  const mes = $('#km-mes').value, d = $('#km-desde').value, h = $('#km-hasta').value, op = $('#km-op').value, hoy = hoyISO();
+  return (x, salvoOp) => {
+    if (!$('#km-prev').checked && x.fecha > hoy) return false;
+    if (mes && x.fecha.slice(0, 7) !== mes) return false;
+    if (d && x.fecha < d) return false;
+    if (h && x.fecha > h) return false;
+    if (!salvoOp && op && x.operario_id !== op) return false;
+    return true;
+  };
+}
+
+function pintarKm() {
+  if (!kmCargado) return;
+  const hoy = hoyISO();
+  // Meses con datos (el actual siempre)
+  const meses = contar(kmFilas.filter((x) => $('#km-prev').checked || x.fecha <= hoy), (x) => x.fecha.slice(0, 7));
+  if (!meses.has(hoy.slice(0, 7))) meses.set(hoy.slice(0, 7), 0);
+  const mesV = $('#km-mes').value;
+  $('#km-mes').innerHTML = `<option value="">Todos los meses</option>` + [...meses].sort((a, b) => b[0].localeCompare(a[0]))
+    .map(([k, n]) => `<option value="${k}" ${k === mesV ? 'selected' : ''}>${esc(nombreMes(k))} (${n} días)</option>`).join('');
+  const pasaKm = filtroKm();
+  const ops = new Map();
+  kmFilas.filter((x) => pasaKm(x, true)).forEach((x) => ops.set(x.operario_id, { n: (ops.get(x.operario_id)?.n || 0) + 1, nombre: x.operario || '—' }));
+  const opV = $('#km-op').value;
+  $('#km-op').innerHTML = `<option value="">Todos los operarios</option>` + [...ops].sort((a, b) => a[1].nombre.localeCompare(b[1].nombre))
+    .map(([id, o]) => `<option value="${id}" ${id === opV ? 'selected' : ''}>${esc(o.nombre)} (${o.n})</option>`).join('');
+
+  const ver = kmFilas.filter((x) => pasaKm(x)).sort((a, b) => b.fecha.localeCompare(a.fecha) || (a.operario || '').localeCompare(b.operario || ''));
+  const totKm = ver.reduce((t, x) => t + kmFinal(x), 0), totEur = r2(ver.reduce((t, x) => t + kmEur(x), 0));
+  const visitas = ver.reduce((t, x) => t + (x.visitas || 0), 0), sinU = ver.reduce((t, x) => t + (x.sin_ubicar || 0), 0);
+  const conKm = ver.filter((x) => kmFinal(x) > 0).length, prev = ver.filter((x) => x.fecha > hoy).length;
+  $('#km-kpis').innerHTML = `
+    <div class="kpi"><b>${km1(totKm)}</b><span>Kilómetros</span></div>
+    <div class="kpi"><b>${eur(totEur)}</b><span>Importe</span></div>
+    <div class="kpi"><b>${nfmt(ver.length)}</b><span>Días con visitas</span><small>${conKm} con desplazamiento fuera del pueblo</small></div>
+    <div class="kpi"><b>${nfmt(visitas)}</b><span>Visitas</span></div>
+    <div class="kpi"><b>${conKm ? km1(totKm / conKm) : '—'}</b><span>Km medio por día con ruta</span></div>
+    ${prev ? `<div class="kpi aviso"><b>${prev}</b><span>Días previstos (futuros)</span></div>` : ''}
+    ${sinU ? `<div class="kpi aviso"><b>${sinU}</b><span>Visitas sin pueblo</span><small>no suman km</small></div>` : ''}`;
+
+  // Resumen por operario
+  const res = new Map();
+  ver.forEach((x) => { const r = res.get(x.operario_id) || { nombre: x.operario || '—', dias: 0, visitas: 0, km: 0, eur: 0, tarifas: new Set() };
+    r.dias++; r.visitas += x.visitas || 0; r.km += kmFinal(x); r.eur += kmEur(x); r.tarifas.add(Number(x.tarifa ?? tarifaDe(x.operario_id))); res.set(x.operario_id, r); });
+  $('#km-ops').innerHTML = res.size ? `<div class="tabla-km"><table><thead><tr><th>Operario</th><th class="num">Días</th><th class="num">Visitas</th><th class="num">Km</th><th class="num">Precio</th><th class="num">Importe</th></tr></thead><tbody>
+    ${[...res].sort((a, b) => b[1].km - a[1].km).map(([id, r]) => `<tr><td><b>${esc(r.nombre)}</b></td><td class="num">${r.dias}</td><td class="num">${r.visitas}</td><td class="num">${km1(r.km)}</td>
+      <td class="num">${[...r.tarifas].map(eurKm).join(' / ')}</td><td class="num"><b>${eur(r2(r.eur))}</b></td></tr>`).join('')}
+    <tr class="tot"><td>Total</td><td class="num">${ver.length}</td><td class="num">${visitas}</td><td class="num">${km1(totKm)}</td><td></td><td class="num">${eur(totEur)}</td></tr>
+    </tbody></table></div>` : '<p class="suave">Sin rutas en este periodo.</p>';
+
+  // Detalle por día
+  const rutaTxt = (x) => {
+    const r = x.ruta || [];
+    if (!r.length) return 'Todo dentro de Valladolid · 0 km';
+    return r.map((t) => `${esc(t.de)} → <b>${esc(t.a)}</b> ${Number(t.km).toLocaleString('es-ES')}${t.servicios ? ` <span title="Servicios">(${t.servicios.map(esc).join(', ')})</span>` : ''}`).join(' · ');
+  };
+  $('#km-lista').innerHTML = ver.length ? `<div class="tabla-km"><table><thead><tr>
+      <th>Fecha</th><th>Operario</th><th class="num">Visitas</th><th>Ruta (km por carretera)</th><th class="num">Km</th><th class="num">Km corregidos</th><th class="num">€/km</th><th class="num">Importe</th><th>Comentario</th></tr></thead><tbody>
+    ${ver.map((x) => `<tr data-k="${x.id}" class="${x.fecha > hoy ? 'prev' : ''} ${x.km_manual != null ? 'corr' : ''}">
+      <td>${diaKm(x.fecha)} ${fechaCorta(x.fecha)}${x.fecha > hoy ? ' <span class="chip gr">Previsto</span>' : ''}</td>
+      <td>${esc(x.operario || '—')}</td>
+      <td class="num">${x.visitas}${x.sin_ubicar ? ` <span class="chip av" title="Visitas sin pueblo: no suman">${x.sin_ubicar} sin pueblo</span>` : ''}</td>
+      <td class="ruta">${rutaTxt(x)}</td>
+      <td class="num kmc">${km1(x.km)}</td>
+      <td class="num"><input class="kmm" inputmode="decimal" placeholder="—" value="${x.km_manual == null ? '' : String(x.km_manual).replace('.', ',')}" onchange="guardarKm('${x.id}', 'km_manual', this)" title="Si lo rellenas, manda sobre el calculado (el robot no lo cambia)"></td>
+      <td class="num">${eurKm(x.tarifa ?? tarifaDe(x.operario_id))}</td>
+      <td class="num"><b>${eur(kmEur(x))}</b></td>
+      <td><input class="com" value="${esc(x.comentario || '')}" onchange="guardarKm('${x.id}', 'comentario', this)"></td></tr>`).join('')}
+    </tbody></table></div>` : '<p class="suave">Sin rutas en este periodo.</p>';
+  const tars = kmTarifas.filter((t) => t.clave !== '*').map((t) => `${esc(kmFilas.find((x) => x.operario_id === t.clave)?.operario || 'operario')} ${eurKm(t.euros_km)}`);
+  $('#km-nota').innerHTML = `Ruta de cada día: salida de Valladolid (km 0) → pueblos de las visitas en el orden de Planificación → vuelta a Valladolid.
+    Distancias por carretera entre pueblos; dentro del mismo pueblo (también Valladolid capital) cuenta 0. Se recalcula solo al cambiar la Planificación (en unos minutos).
+    Precio: ${tars.join(' · ')}${tars.length ? ' · ' : ''}resto ${eurKm(tarifaDe('*'))}.`;
+}
+
+async function guardarKm(id, campo, el) {
+  let v = el.value.trim();
+  if (campo === 'km_manual') {
+    if (v === '') v = null;
+    else { v = aNum(v); if (v == null || v < 0) { aviso('Escribe un número de km'); return; } }
+  } else v = v || null;
+  const { error } = await sb.from('kilometraje').update({ [campo]: v, editado_en: new Date().toISOString() }).eq('id', id);
+  if (error) return aviso('No se pudo guardar: ' + mensaje(error));
+  const x = kmFilas.find((f) => f.id === id); if (x) x[campo] = v;
+  aviso('Guardado'); el.blur(); pintarKm();
+}
+
+async function recalcularKm(btn) {
+  const mes = $('#km-mes').value;
+  let desde = $('#km-desde').value || null, hasta = $('#km-hasta').value || null;
+  if (mes) { desde = mes + '-01'; const [y, m] = mes.split('-').map(Number); hasta = new Date(Date.UTC(y, m, 0)).toISOString().slice(0, 10); }
+  btn.disabled = true;
+  const { data, error } = await sb.rpc('km_recalcular', { desde, hasta });
+  btn.disabled = false;
+  if (error) return aviso('No se pudo: ' + mensaje(error));
+  aviso(`Recalculando ${data} día${data === 1 ? '' : 's'}… se actualiza solo en un momento`);
+}
+
+async function excelKm() {
+  try {
+    if (!window.XLSX) await cargarScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+    const pasaKm = filtroKm();
+    const ver = kmFilas.filter((x) => pasaKm(x)).sort((a, b) => a.fecha.localeCompare(b.fecha) || (a.operario || '').localeCompare(b.operario || ''));
+    const cab = ['FECHA', 'OPERARIO', 'VISITAS', 'RUTA', 'KM CALCULADOS', 'KM CORREGIDOS', 'KM', '€/KM', 'IMPORTE', 'COMENTARIO'];
+    const datos = ver.map((x) => [new Date(x.fecha + 'T00:00:00'), x.operario || '', x.visitas,
+      (x.ruta || []).map((t) => `${t.de} → ${t.a} ${t.km}`).join(' · ') || 'Valladolid (0 km)',
+      Number(x.km || 0), x.km_manual == null ? '' : Number(x.km_manual), kmFinal(x), Number(x.tarifa ?? tarifaDe(x.operario_id)), kmEur(x), x.comentario || '']);
+    datos.push(['', 'Total', ver.reduce((t, x) => t + x.visitas, 0), '', '', '', r2(ver.reduce((t, x) => t + kmFinal(x), 0)), '', r2(ver.reduce((t, x) => t + kmEur(x), 0)), '']);
+    const ws = XLSX.utils.aoa_to_sheet([cab, ...datos], { cellDates: true, dateNF: 'dd/mm/yyyy' });
+    ws['!cols'] = [11, 14, 8, 70, 12, 12, 10, 8, 11, 24].map((w) => ({ wch: w }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Kilometraje');
+    XLSX.writeFile(wb, `KUBEL-kilometraje-${$('#km-mes').value || hoyISO()}.xlsx`);
+  } catch (e) { aviso('Error: ' + mensaje(e)); }
 }
 </script>
 </body>
