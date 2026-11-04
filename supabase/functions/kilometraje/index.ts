@@ -76,7 +76,13 @@ async function geolocalizar(p: Parada): Promise<Lugar & { encontrado: string | n
       .sort((a, b) => Number(!!b.postcodes?.includes(p.cp ?? '-')) - Number(!!a.postcodes?.includes(p.cp ?? '-')));
     for (const x of res) {
       if (centroCP && kmLinea([x.latitude, x.longitude], [centroCP.latitude, centroCP.longitude]) > 20) continue; // no cuadra con su CP
-      return { clave: p.clave!, nombre: p.nombre, provincia, lat: x.latitude, lon: x.longitude, origen: 'nombre', encontrado: desc(x) };
+      return { clave: p.clave!, nombre: x.name, provincia, lat: x.latitude, lon: x.longitude, origen: 'nombre', encontrado: desc(x) };
+    }
+    // Sin resultado: la primera palabra, solo si el pueblo se llama exactamente así en su provincia («MAGAZ DE PISUERGA» → Magaz)
+    const pal = nombreClave.split(' ')[0];
+    if (!centroCP && pal !== nombreClave && pal.length >= 4) {
+      const x = (await buscar(titulo(pal))).filter(enProv).find((y) => norm(y.name) === pal);
+      if (x) return { clave: p.clave!, nombre: p.nombre, provincia, lat: x.latitude, lon: x.longitude, origen: 'aproximado', encontrado: desc(x) };
     }
   }
   if (centroCP) return { clave: p.clave!, nombre: p.nombre, provincia, lat: centroCP.latitude, lon: centroCP.longitude, origen: 'cp', encontrado: `CP ${p.cp} → ${desc(centroCP)}` };
@@ -105,7 +111,7 @@ Deno.serve(async (req) => {
     if (!s?.valor || req.headers.get('x-kubel-secreto') !== s.valor) return new Response('no', { status: 401 });
     const prueba = new URL(req.url).searchParams.get('prueba') === '1';
 
-    const pend = await sql`select operario_id, fecha::text as fecha, marcado_en from km_pendientes order by fecha desc limit ${MAX_DIAS}`;
+    const pend = await sql`select operario_id, fecha::text as fecha, marcado_en::text as marcado_en from km_pendientes order by fecha desc limit ${MAX_DIAS}`;
     if (!pend.length) return new Response(JSON.stringify({ dias: 0 }), { headers: { 'Content-Type': 'application/json' } });
 
     const visitas = await sql`
@@ -125,14 +131,18 @@ Deno.serve(async (req) => {
       porDia.get(k)!.push(v);
     }
 
+    const reintentados = new Set<string>();
     const lugar = async (p: Parada): Promise<Lugar | null> => {
-      if (lugares.has(p.clave!)) return lugares.get(p.clave!)!;
+      const ya = lugares.get(p.clave!);
+      // Los no encontrados se vuelven a buscar (una vez por pasada); los 'manual' nunca se tocan
+      if (ya && (ya.origen !== 'no_encontrado' || reintentados.has(ya.clave))) return ya;
       if (!tiempo()) return null;
       const l = await geolocalizar(p);
-      lugares.set(l.clave, l);
+      lugares.set(l.clave, l); reintentados.add(l.clave);
       if (!prueba) await sql`insert into km_lugares (clave, nombre, provincia, lat, lon, encontrado, origen)
         values (${l.clave}, ${l.nombre}, ${l.provincia}, ${l.lat}, ${l.lon}, ${l.encontrado ?? null}, ${l.origen})
-        on conflict (clave) do nothing`;
+        on conflict (clave) do update set lat = excluded.lat, lon = excluded.lon, encontrado = excluded.encontrado,
+          origen = excluded.origen, actualizado_en = now() where km_lugares.origen = 'no_encontrado'`;
       return l;
     };
     const tramo = async (a: Lugar, b: Lugar): Promise<number | null> => {
@@ -157,7 +167,7 @@ Deno.serve(async (req) => {
       const lista = porDia.get(`${d.operario_id}§${d.fecha}`) ?? [];
       if (!lista.length) {
         if (!prueba) await sql`delete from kilometraje where operario_id = ${d.operario_id} and fecha = ${d.fecha} and km_manual is null and coalesce(comentario, '') = ''`;
-        if (!prueba) await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and marcado_en <= ${d.marcado_en}`;
+        if (!prueba) await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and marcado_en <= ${d.marcado_en}::timestamptz`;
         hechos.push({ fecha: d.fecha, operario: nombres.get(d.operario_id), visitas: 0 });
         continue;
       }
@@ -195,7 +205,7 @@ Deno.serve(async (req) => {
           values (${d.operario_id}, ${d.fecha}, ${op}, ${lista.length}, ${sql.json(ruta)}, ${total}, ${tarifa}, ${sinUbicar}, now())
           on conflict (operario_id, fecha) do update set operario = excluded.operario, visitas = excluded.visitas, ruta = excluded.ruta,
             km = excluded.km, tarifa = excluded.tarifa, sin_ubicar = excluded.sin_ubicar, calculado_en = now()`;
-        await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and marcado_en <= ${d.marcado_en}`;
+        await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and marcado_en <= ${d.marcado_en}::timestamptz`;
       }
     }
     const res = { prueba, dias: pend.length, calculados: hechos.length, quedan, segundos: Math.round((Date.now() - INICIO) / 1000), hechos: prueba ? hechos : undefined };
