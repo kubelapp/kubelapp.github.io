@@ -111,7 +111,7 @@ Deno.serve(async (req) => {
     if (!s?.valor || req.headers.get('x-kubel-secreto') !== s.valor) return new Response('no', { status: 401 });
     const prueba = new URL(req.url).searchParams.get('prueba') === '1';
 
-    const pend = await sql`select operario_id, fecha::text as fecha, marcado_en::text as marcado_en from km_pendientes order by fecha desc limit ${MAX_DIAS}`;
+    const pend = await sql`select operario_id, fecha::text as fecha, (extract(epoch from marcado_en) * 1000000)::bigint::text as marca from km_pendientes order by fecha desc limit ${MAX_DIAS}`;
     if (!pend.length) return new Response(JSON.stringify({ dias: 0 }), { headers: { 'Content-Type': 'application/json' } });
 
     const visitas = await sql`
@@ -161,13 +161,13 @@ Deno.serve(async (req) => {
     if (!origen?.lat) throw new Error('No se pudo situar Valladolid');
 
     const hechos: unknown[] = [];
-    let quedan = 0;
+    let quedan = 0, borrados = 0;
     for (const d of pend) {
       if (!tiempo()) { quedan++; continue; }
       const lista = porDia.get(`${d.operario_id}§${d.fecha}`) ?? [];
       if (!lista.length) {
         if (!prueba) await sql`delete from kilometraje where operario_id = ${d.operario_id} and fecha = ${d.fecha} and km_manual is null and coalesce(comentario, '') = ''`;
-        if (!prueba) await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and marcado_en <= ${d.marcado_en}::timestamptz`;
+        if (!prueba) borrados += (await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and (extract(epoch from marcado_en) * 1000000)::bigint <= ${d.marca}::bigint`).count;
         hechos.push({ fecha: d.fecha, operario: nombres.get(d.operario_id), visitas: 0 });
         continue;
       }
@@ -205,10 +205,10 @@ Deno.serve(async (req) => {
           values (${d.operario_id}, ${d.fecha}, ${op}, ${lista.length}, ${sql.json(ruta)}, ${total}, ${tarifa}, ${sinUbicar}, now())
           on conflict (operario_id, fecha) do update set operario = excluded.operario, visitas = excluded.visitas, ruta = excluded.ruta,
             km = excluded.km, tarifa = excluded.tarifa, sin_ubicar = excluded.sin_ubicar, calculado_en = now()`;
-        await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and marcado_en <= ${d.marcado_en}::timestamptz`;
+        borrados += (await sql`delete from km_pendientes where operario_id = ${d.operario_id} and fecha = ${d.fecha} and (extract(epoch from marcado_en) * 1000000)::bigint <= ${d.marca}::bigint`).count;
       }
     }
-    const res = { prueba, dias: pend.length, calculados: hechos.length, quedan, segundos: Math.round((Date.now() - INICIO) / 1000), hechos: prueba ? hechos : undefined };
+    const res = { prueba, dias: pend.length, calculados: hechos.length, quedan, borrados, segundos: Math.round((Date.now() - INICIO) / 1000), hechos: prueba ? hechos : undefined };
     console.log('kilometraje', JSON.stringify({ ...res, hechos: undefined }));
     return new Response(JSON.stringify(res), { headers: { 'Content-Type': 'application/json' } });
   } catch (e) {
