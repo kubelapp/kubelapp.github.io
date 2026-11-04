@@ -93,6 +93,8 @@
   .kpi b{display:block;font-size:20px;font-variant-numeric:tabular-nums}
   .kpi span{font-size:12px;color:var(--suave);text-transform:uppercase;letter-spacing:.3px}
   .kpi.aviso b{color:var(--acento)}
+  button.kpi-enlace{font:inherit;color:inherit;text-align:left;cursor:pointer}
+  button.kpi-enlace:hover{border-color:var(--suave)}
   .filtros{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center}
   .filtros input,.filtros select{width:auto;min-width:150px;padding:7px 9px}
   .filtros #ff-q{flex:1;min-width:200px}
@@ -550,10 +552,13 @@ async function cargarFac(forzar) {
 }
 
 // ---------- Filtros (cruzados entre sí: cada lista cuenta con los demás filtros puestos) ----------
+// Sin trabajo aparente: SIGMA lo cerró sin presupuesto y sin visita en KUBEL. Queda fuera de listas y totales;
+// vuelve solo en cuanto tenga importe u operario (a mano, por el robot o por una factura de SIGMA).
+const sinTrabajo = (x) => x.origen === 'auto' && x.importe == null && !x.operario && !x.liquidado && !x.factura;
 const FILTROS = {
   op: (x, v) => (x.operario || '—') === v,
   cia: (x, v) => (x.compania || '—') === v,
-  est: (x, v) => v === 'liq' ? x.liquidado : v === 'no' ? !x.liquidado : v === 'sinimp' ? x.importe == null : true,
+  est: (x, v) => v === 'liq' ? x.liquidado : v === 'no' ? !x.liquidado : v === 'sinimp' ? x.importe == null : v === 'sintrab' ? sinTrabajo(x) : true,
   mes: (x, v) => claveMes(x) === v,
   dia: (x, v) => x.fecha === v,
   cie: (x, v) => (x.cerrado_por || '—') === v,
@@ -567,6 +572,8 @@ function pasa(x, f, salvo) {
   for (const k of Object.keys(FILTROS)) if (k !== salvo && f[k] && !FILTROS[k](x, f[k])) return false;
   const q = $('#ff-q').value.trim().toLowerCase();
   if (q && ![x.servicio, x.direccion, x.factura, x.comentario, x.operario, x.cerrado_por].some((t) => String(t || '').toLowerCase().includes(q))) return false;
+  // Se ven al elegirlas en el filtro o al buscarlas; si no, no cuentan
+  if (!q && salvo !== 'est' && f.est !== 'sintrab' && sinTrabajo(x)) return false;
   return true;
 }
 function rellenarSelect(id, todos, opciones, valor) {
@@ -584,7 +591,7 @@ function pintarFac() {
   const cias = contar(filas.filter((x) => pasa(x, f, 'cia')), (x) => x.compania || '—');
   rellenarSelect('#ff-cia', 'Todas las compañías', [...cias].sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, k, n]), f.cia);
   const be = filas.filter((x) => pasa(x, f, 'est'));
-  rellenarSelect('#ff-est', 'Liquidado y no liquidado', [['no', 'NO LIQUIDADO', be.filter((x) => !x.liquidado).length], ['liq', 'LIQUIDADO', be.filter((x) => x.liquidado).length], ['sinimp', 'Sin importe', be.filter((x) => x.importe == null).length]], f.est);
+  rellenarSelect('#ff-est', 'Liquidado y no liquidado', [['no', 'NO LIQUIDADO', be.filter((x) => !x.liquidado && !sinTrabajo(x)).length], ['liq', 'LIQUIDADO', be.filter((x) => x.liquidado).length], ['sinimp', 'Sin importe', be.filter((x) => x.importe == null && !sinTrabajo(x)).length], ['sintrab', 'Sin trabajo aparente', be.filter(sinTrabajo).length]], f.est);
   const cies = contar(filas.filter((x) => pasa(x, f, 'cie')), (x) => x.cerrado_por || '—');
   rellenarSelect('#ff-cie', 'Cerrado por: todas las cuentas', [...cies].sort((a, b) => a[0] === '—' ? 1 : b[0] === '—' ? -1 : a[0].localeCompare(b[0])).map(([k, n]) => [k, k === '—' ? SIN_CIERRE : 'Cerrado por ' + k, n]), f.cie);
   const meses = contar(filas.filter((x) => pasa(x, f, 'mes')), claveMes);
@@ -593,13 +600,15 @@ function pintarFac() {
   const ver = filas.filter((x) => pasa(x, f));
   const suma = (l) => r2(l.reduce((t, x) => t + (Number(x.importe) || 0), 0));
   const pend = ver.filter((x) => !x.liquidado), sinImp = ver.filter((x) => x.importe == null);
+  const nSinTrab = f.est === 'sintrab' ? 0 : filas.filter((x) => pasa(x, f, 'est') && sinTrabajo(x)).length;
   $('#fac-kpis').innerHTML = `
     <div class="kpi"><b>${ver.length}</b><span>Servicios</span></div>
     <div class="kpi"><b>${eur(suma(ver))}</b><span>Facturación sin IVA</span></div>
     <div class="kpi"><b>${eur(r2(suma(ver) * IVA))}</b><span>Con IVA</span></div>
     <div class="kpi aviso"><b>${eur(suma(pend))}</b><span>No liquidado (${pend.length})</span></div>
     <div class="kpi"><b>${eur(suma(ver) - suma(pend))}</b><span>Liquidado (${ver.length - pend.length})</span></div>
-    ${sinImp.length ? `<div class="kpi aviso"><b>${sinImp.length}</b><span>Sin importe</span></div>` : ''}`;
+    ${sinImp.length ? `<div class="kpi aviso"><b>${sinImp.length}</b><span>Sin importe</span></div>` : ''}
+    ${nSinTrab ? `<button class="kpi kpi-enlace" onclick="$('#ff-est').value='sintrab';pintarFac()" title="Ver estas líneas"><b>${nSinTrab}</b><span>Sin trabajo aparente</span></button>` : ''}`;
 
   if (!ver.length) { $('#fac-lista').innerHTML = '<p class="suave">Ningún servicio con estos filtros.</p>'; return; }
   const MAX = 600, lista = ver.slice(0, MAX);
@@ -625,7 +634,7 @@ function pintarFac() {
       <div class="c">${fechaCorta(x.fecha)} · ${esc(x.operario || '—')} · ${esc(x.compania || '')}<br>${esc(x.direccion || '')}${x.provincia ? ' · ' + esc(x.provincia) : ''}${x.cerrado_por ? '<br>Cerrado por ' + txtCierre(x) : ''}</div>
       <div class="f2">${inp(x, 'importe', 'imp', 'Importe')}<span class="suave">${x.importe != null ? 'con IVA ' + eur(r2(x.importe * IVA)) : ''}</span>${dif(x)}
         <button class="mini sec" onclick="modalLinea('${x.id}')">Editar</button></div>${nota(x)}</div>`).join('')}</div>
-    <div class="pie-tabla">${ver.length > MAX ? `Se muestran ${MAX} de ${ver.length}: usa los filtros para acotar. ` : ''}Importe sin IVA. Lo anota el robot con el total del presupuesto aceptado en SIGMA; puedes corregirlo escribiendo encima.</div>`;
+    <div class="pie-tabla">${f.est === 'sintrab' ? 'SIGMA los cerró sin presupuesto y sin visita en KUBEL: no cuentan en los totales ni en las estadísticas. Si alguno sí tuvo trabajo, escribe su importe y volverá a la lista. ' : ''}${ver.length > MAX ? `Se muestran ${MAX} de ${ver.length}: usa los filtros para acotar. ` : ''}Importe sin IVA. Lo anota el robot con el total del presupuesto aceptado en SIGMA; puedes corregirlo escribiendo encima.</div>`;
 }
 
 async function guardarCampo(id, campo, el) {
@@ -828,7 +837,7 @@ function cotejar(f) {
     res.nuevos.push({ l, cand: k, eleccion: seguro || 'nueva' });
   }
   const tope = f.fecha || hoyISO();
-  res.pendientes = sigma.filter((x) => !x.liquidado && !usadas.has(x.id) && (!x.fecha || x.fecha <= tope))
+  res.pendientes = sigma.filter((x) => !x.liquidado && !sinTrabajo(x) && !usadas.has(x.id) && (!x.fecha || x.fecha <= tope))
     .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
   return res;
 }
@@ -1150,8 +1159,8 @@ function pintarEst() {
   }
 
   // ----- Facturación -----
-  const fv = filas.filter((x) => (!prov || x.provincia === prov) && en(x.fecha, d, a));
-  const antF = filas.filter((x) => (!prov || x.provincia === prov) && en(x.fecha, pd, pa));
+  const fv = filas.filter((x) => !sinTrabajo(x) && (!prov || x.provincia === prov) && en(x.fecha, d, a));
+  const antF = filas.filter((x) => !sinTrabajo(x) && (!prov || x.provincia === prov) && en(x.fecha, pd, pa));
   const imp = (x) => Number(x.importe) || 0;
   const suma = (l) => r2(l.reduce((t, x) => t + imp(x), 0));
   const tot = suma(fv), conImp = fv.filter((x) => x.importe != null), noLiq = fv.filter((x) => !x.liquidado), sinImp = fv.length - conImp.length;
