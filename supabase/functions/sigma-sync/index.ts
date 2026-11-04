@@ -19,6 +19,9 @@
 //   que ese servicio se compruebe en la pasada siguiente, antes que los demás (antes los libres se miraban cada 6 h).
 // v26 (04/11/2026): un Repaso que SIGMA rechaza por estado 6 «Aplazamiento Pte. Cia./Perito» o 16 «Confirmación o Presupuesto
 //   pendiente de tramitar» se descarta solo, sin error ni aviso (la oficina lo pide de nuevo cuando se desbloquee).
+// v27 (04/11/2026): al comprobar el Repaso (solo lectura) guarda también si SIGMA exige la fecha de contacto con el cliente
+//   (partes.sigma_pide_contacto), para que la oficina la pida al hacer el Repaso. Un servicio que cambia se mira en esa misma pasada.
+// ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
 // ?cuenta=VLL → solo esa cuenta.  ?enviar=1 → solo manda a SIGMA los envíos aprobados (sin leer el listado).
 import { createClient, SupabaseClient } from 'npm:@supabase/supabase-js@2.45.4';
@@ -549,8 +552,10 @@ async function paseRepaso(s: Sesion, n: string) {
   return (html.match(/<multiasistencia-repaso[^>]*\sut="([^"]+)"/i) || [])[1] || null;
 }
 // Solo lectura: ¿deja el portal abrir el Repaso? 'iva' = bloqueado por el documento de IVA · 'ok' · 'otro' (otro motivo)
-// null = no se pudo saber (fallo del portal)
-async function estadoRepaso(ut: string, n: string): Promise<'iva' | 'ok' | 'otro' | null> {
+// pide = si exige la fecha de contacto con el cliente (null si el portal no deja abrirlo y no se puede saber)
+// null = no se pudo saber nada (fallo del portal)
+type EstadoRepaso = { est: 'iva' | 'ok' | 'otro'; pide: boolean | null; codigos?: unknown };
+async function estadoRepaso(ut: string, n: string): Promise<EstadoRepaso | null> {
   try {
     const r = await fetch(`${API_REPASO}/review-initial-data`, {
       method: 'POST', signal: AbortSignal.timeout(20000), body: JSON.stringify({ reparation: n }),
@@ -558,8 +563,8 @@ async function estadoRepaso(ut: string, n: string): Promise<'iva' | 'ok' | 'otro
     });
     if (!r.ok) { await r.body?.cancel(); return null; }
     const j = await r.json();
-    if (j?.success) return 'ok';
-    return IVA_PENDIENTE.test(JSON.stringify(j?.metadata ?? j ?? '')) ? 'iva' : 'otro';
+    if (j?.success) return { est: 'ok', pide: !!j?.data?.dates?.clientContact };
+    return { est: IVA_PENDIENTE.test(JSON.stringify(j?.metadata ?? j ?? '')) ? 'iva' : 'otro', pide: null, codigos: (j?.metadata?.errorCodes || []).map((x: { code?: unknown }) => x?.code) };
   } catch { return null; }
 }
 
@@ -1020,14 +1025,20 @@ function avisoIvaNuevo(p: any) {
   return !p.sigma_iva_revisado_en || aviso >= horaMadrid(p.sigma_iva_revisado_en);
 }
 async function revisarIva(admin: SupabaseClient, s: Sesion, ciaId: number, cuenta: string, vivos: string[], prioridad: Set<string>, escribir: boolean) {
-  const { data } = await admin.from('partes').select('id, numero_servicio, sigma_iva_pendiente, sigma_iva_revisado_en, sigma_bitacora')
+  const { data } = await admin.from('partes').select('id, numero_servicio, sigma_iva_pendiente, sigma_iva_revisado_en, sigma_bitacora, sigma_pide_contacto, sigma_cambio_en')
     .eq('compania_id', ciaId).eq('sigma_cuenta', cuenta).in('numero_servicio', vivos.length ? vivos : ['-']);
   const ahoraMs = Date.now();
-  const cola = (data || []).map((p) => ({ ...p, nuevo: !p.sigma_iva_pendiente && avisoIvaNuevo(p) })).filter((p) => {
-    if (p.nuevo) return true;
+  // cambio: el listado del portal trae algo nuevo desde la última comprobación (p. ej. ha salido del estado 15) → se mira en esta pasada
+  const cola = (data || []).map((p) => ({
+    ...p, nuevo: !p.sigma_iva_pendiente && avisoIvaNuevo(p),
+    cambio: !!p.sigma_cambio_en && (!p.sigma_iva_revisado_en || new Date(p.sigma_cambio_en).getTime() > new Date(p.sigma_iva_revisado_en).getTime()),
+  })).filter((p) => {
+    if (p.nuevo || p.cambio) return true;
     const edad = p.sigma_iva_revisado_en ? (ahoraMs - new Date(p.sigma_iva_revisado_en).getTime()) / 60000 : 1e9;
+    if (p.sigma_pide_contacto === null && edad > 60) return true; // aún no se sabe si exige la fecha de contacto
     return p.sigma_iva_pendiente ? edad > IVA_MARCADO_MIN : edad > IVA_LIBRE_H * 60;
   }).sort((a, b) => (Number(b.nuevo) - Number(a.nuevo))
+    || (Number(b.cambio) - Number(a.cambio))
     || (Number(!!b.sigma_iva_pendiente) - Number(!!a.sigma_iva_pendiente))
     || (Number(prioridad.has(b.numero_servicio)) - Number(prioridad.has(a.numero_servicio)))
     || String(a.sigma_iva_revisado_en ?? '').localeCompare(String(b.sigma_iva_revisado_en ?? ''))).slice(0, MAX_IVA);
@@ -1036,11 +1047,13 @@ async function revisarIva(admin: SupabaseClient, s: Sesion, ciaId: number, cuent
   const ut = await paseRepaso(s, cola[0].numero_servicio);
   if (!ut) return out;
   for (const p of cola) {
-    const est = await estadoRepaso(ut, p.numero_servicio);
-    if (est === null) continue;
+    const lectura = await estadoRepaso(ut, p.numero_servicio);
+    if (lectura === null) continue;
+    const est = lectura.est;
     out.revisados++;
     const ahora = new Date().toISOString();
     const d: Record<string, unknown> = { sigma_iva_revisado_en: ahora };
+    if (lectura.pide !== null) d.sigma_pide_contacto = lectura.pide;
     if (est === 'iva') { out.bloqueados.push(p.numero_servicio); if (!p.sigma_iva_pendiente) d.sigma_iva_pendiente = ahora; }
     else if (p.sigma_iva_pendiente) { d.sigma_iva_pendiente = null; out.desbloqueados.push(p.numero_servicio); }
     if (escribir) await admin.from('partes').update(d).eq('id', p.id);
@@ -1076,7 +1089,7 @@ async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: str
       const r = e.tipo === 'repaso' ? await enviarRepaso(s, e) : e.tipo === 'tramitacion' ? await enviarTramitacion(s, e)
         : e.tipo === 'confirmacion' ? await enviarConfirmacion(s, e) : await enviarInformarCita(s, e);
       if (e.tipo === 'confirmacion') await admin.from('partes').update({ sigma_confirmado_en: new Date().toISOString() }).eq('id', e.parte_id);
-      if (e.tipo === 'repaso') await admin.from('partes').update({ sigma_iva_pendiente: null, sigma_iva_revisado_en: new Date().toISOString() }).eq('id', e.parte_id);
+      if (e.tipo === 'repaso') await admin.from('partes').update({ sigma_iva_pendiente: null, sigma_iva_revisado_en: new Date().toISOString(), sigma_pide_contacto: false }).eq('id', e.parte_id);
       await admin.from('sigma_envios').update({ estado: 'enviado', resultado: r, enviado_en: new Date().toISOString(), intentos: 1 }).eq('id', e.id);
       await admin.from('partes').update({ sigma_ficha_en: null }).eq('id', e.parte_id); // releer la ficha en la próxima pasada
       enviados++;
@@ -1095,6 +1108,7 @@ async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: str
         continue;
       }
       if (e.tipo !== 'tramitacion') fallidos.add(e.parte_id);
+      if (e.tipo === 'repaso' && /SIGMA pide la fecha y hora en que se contactó/.test((err as Error).message)) await admin.from('partes').update({ sigma_pide_contacto: true }).eq('id', e.parte_id);
       const msg = err instanceof IvaPendiente ? BLOQUEO_IVA : (err as Error).message;
       if (err instanceof IvaPendiente) {
         const ahora = new Date().toISOString();
@@ -1462,6 +1476,18 @@ Deno.serve(async (req) => {
   const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
   const { data: cia } = await admin.from('companias').select('id').eq('nombre', 'SIGMA').single();
   const resultados: Resumen[] = [];
+  const verContacto = url.searchParams.get('vercontacto');
+  if (verContacto) { // solo lectura: si el Repaso de esos servicios exige la fecha de contacto con el cliente
+    const c = CUENTAS.find((x) => x.id === (solo || 'VLL'))!;
+    const ses = new Sesion();
+    await entrar(ses, Deno.env.get(`SIGMA_${c.id}_USUARIO`)!, Deno.env.get(`SIGMA_${c.id}_CLAVE`)!);
+    const numeros = verContacto.split(',').map((x) => x.trim()).filter(Boolean);
+    const ut = await paseRepaso(ses, numeros[0]);
+    if (!ut) return new Response(JSON.stringify({ error: 'sin pase de Repaso' }), { headers: { 'Content-Type': 'application/json' } });
+    const lista = [];
+    for (const n of numeros) lista.push({ servicio: n, ...((await estadoRepaso(ut, n)) ?? { est: null }) });
+    return new Response(JSON.stringify({ cuenta: c.id, lista }), { headers: { 'Content-Type': 'application/json' } });
+  }
   const verConfir = url.searchParams.get('verconfir');
   if (verConfir) { // solo lectura: qué dice el portal de la Confirmación de un servicio
     const c = CUENTAS.find((x) => x.id === (solo || 'VLL'))!;
