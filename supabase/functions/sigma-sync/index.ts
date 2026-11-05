@@ -21,6 +21,9 @@
 //   pendiente de tramitar» se descarta solo, sin error ni aviso (la oficina lo pide de nuevo cuando se desbloquee).
 // v27 (04/11/2026): al comprobar el Repaso (solo lectura) guarda también si SIGMA exige la fecha de contacto con el cliente
 //   (partes.sigma_pide_contacto), para que la oficina la pida al hacer el Repaso. Un servicio que cambia se mira en esa misma pasada.
+// v28 (05/11/2026): el «Informar cita» de un informe nunca informa una cita posterior a la visita: si el portal solo tiene citas
+//   más tarde (p. ej. un Repaso ya programado), se descarta solo. Antes la informaba como realizada (29456320). Necesario porque
+//   desde SQL 30 estos envíos salen sin aprobación de la oficina.
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
 // ?cuenta=VLL → solo esa cuenta.  ?enviar=1 → solo manda a SIGMA los envíos aprobados (sin leer el listado).
@@ -769,7 +772,10 @@ async function informarCitasPendientes(s: Sesion, n: string, resolucion: string,
     // En modo automático (todas) se informan TODAS las pendientes, pasadas o futuras (decisión del usuario 21/10/2026:
     // al hacer un Repaso, la cita anterior se da siempre por «Visita realizada · Finalizado · OK» con su fecha/hora citada)
     const filas = actual.filas;
-    const fila = (!todas && citaFecha ? filas.find((f) => f.fecha === citaFecha) : null) ?? filas[0];
+    // Con fecha de visita: la cita de ese día o, si se movió, una anterior o sin fecha; nunca una posterior a la visita
+    const fila = todas || !citaFecha ? filas[0]
+      : filas.find((f) => f.fecha === citaFecha) ?? filas.find((f) => !f.fecha || f.fecha < citaFecha);
+    if (!fila) throw new SinCitaPendiente(`Descartado solo: las citas pendientes del portal son posteriores a esta visita (${filas.map((f) => f.fecha).join(', ')}). No se ha informado ninguna.`);
     const form = doc.querySelector('form[name="datos_cita"]') as Element | null;
     if (!form) throw new Error('No se encontró el formulario de Informar citas');
     const oculto = (nombre: string) => (form.querySelector(`input[name="${nombre}"]`) as Element | null)?.getAttribute('value') ?? '';
@@ -1096,7 +1102,7 @@ async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: str
     } catch (err) {
       // Informar cita sin cita pendiente en el portal: se descarta solo, sin error ni aviso (decisión del usuario 23/10/2026)
       if (err instanceof SinCitaPendiente && e.tipo === 'informar_cita') {
-        await admin.from('sigma_envios').update({ estado: 'descartado', resultado: SIN_CITA }).eq('id', e.id);
+        await admin.from('sigma_envios').update({ estado: 'descartado', resultado: (err as Error).message.startsWith('Descartado solo') ? (err as Error).message : SIN_CITA }).eq('id', e.id);
         await admin.from('partes').update({ sigma_ficha_en: null }).eq('id', e.parte_id);
         continue;
       }
