@@ -82,24 +82,24 @@ async function entrar(s: Sesion, usuario: string, clave: string) {
 }
 
 // Fotos que ya tiene el servicio en el portal: una fila por foto con la celda «Codigo»
-// (comentario <!-- CODIGO DE FOTO -->). Antes/Después se deduce del texto de la fila.
+// (comentarios <!-- CODIGO DE FOTO -->, <!-- FECHA DE EMISION -->, <!-- MOMENTO DE LA CAPTURA -->).
 function fotosPortal(html: string) {
-  const filas: { codigo: string; momento: 'antes' | 'despues' | '?'; texto: string }[] = [];
+  const celda = (tr: string, nombre: string) => limpio((tr.match(new RegExp(`<!--\\s*${nombre}\\s*-->\\s*<td[^>]*>([\\s\\S]*?)<\\/td>`, 'i')) || [])[1] ?? '');
+  const filas: { codigo: string; momento: 'antes' | 'despues' | '?'; fecha: string }[] = [];
   for (const tr of html.split(/<tr[\s>]/i).slice(1)) {
-    const m = tr.match(/<!--\s*CODIGO DE FOTO\s*-->\s*<td[^>]*>([\s\S]*?)<\/td>/i);
-    if (!m) continue;
-    const codigo = limpio(m[1]);
+    if (!/CODIGO DE FOTO/i.test(tr)) continue;
+    const codigo = celda(tr, 'CODIGO DE FOTO');
     if (!codigo || codigo === '(N/D)') continue;
-    const texto = limpio(tr.split(/<\/tr>/i)[0]);
-    const momento = /\bdespu[eé]s\b/i.test(texto) ? 'despues' : /\bantes\b/i.test(texto) ? 'antes' : '?';
-    filas.push({ codigo, momento, texto: texto.slice(0, 200) });
+    const mom = celda(tr, 'MOMENTO DE LA CAPTURA');
+    const momento = /despu/i.test(mom) ? 'despues' : /antes/i.test(mom) ? 'antes' : '?';
+    filas.push({ codigo, momento, fecha: celda(tr, 'FECHA DE EMISION').replace('(N/D)', '') });
   }
   return filas;
 }
 const codigosFotos = (html: string) => new Set(fotosPortal(html).map((f) => f.codigo));
 const resumenPortal = (html: string) => {
   const f = fotosPortal(html);
-  return { total: f.length, antes: f.filter((x) => x.momento === 'antes').length, despues: f.filter((x) => x.momento === 'despues').length };
+  return { total: f.length, antes: f.filter((x) => x.momento === 'antes').length, despues: f.filter((x) => x.momento === 'despues').length, fotos: f };
 };
 const oculto = (html: string, nombre: string) => (html.match(new RegExp(`name="${nombre}"\\s+value="([^"]*)"`)) || [])[1] ?? '';
 function avisosPortal(html: string) {
