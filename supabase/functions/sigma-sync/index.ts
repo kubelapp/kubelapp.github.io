@@ -26,6 +26,7 @@
 //   desde SQL 30 estos envíos salen sin aprobación de la oficina.
 // v29 (05/11/2026): los envíos se reservan de uno en uno, con tope de tiempo y tras entrar en el portal: los que no caben siguen en «aprobado»
 //   y los recoge el cron kubel-sigma-envios-cola (SQL 31). Un mensaje a tramitación interrumpido se reintenta solo una vez.
+// v31 (05/11/2026): la descripción cortada por la lista (sin «...», 29109162) se sustituye por la completa de la ficha; ?verficha=N&cuenta=VLL = lectura de la ficha.
 // v30 (05/11/2026): mensaje a tramitación sin motivo válido → «Consulta/comentario…» (motivo 1), el predeterminado (decisión del usuario).
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
@@ -1176,6 +1177,11 @@ function partirDireccion(d: string) {
   return m ? { direccion: m[1].trim(), cp: m[2], poblacion: m[3].trim() } : { direccion: d, cp: null, poblacion: null };
 }
 const vacio = (v: unknown) => v === null || v === undefined || v === '';
+// La lista de «Servicios en curso» corta la descripción (a veces con «...», a veces sin nada: 29109162).
+// Si lo guardado es el principio de la descripción de la ficha, se pone la completa (lo escrito a mano no se toca).
+const normDesc = (t: string) => t.toUpperCase().replace(/\.{3}\s*$/, '').replace(/[^0-9A-ZÑÁÉÍÓÚÜ]/g, '');
+const descripcionCortada = (actual: string, ficha: string) =>
+  ficha.length > actual.length && normDesc(actual).length > 0 && normDesc(ficha).startsWith(normDesc(actual));
 
 // r se rellena sobre la marcha: si algo falla a mitad, lo ya hecho (p. ej. aceptados) no se pierde
 async function sincronizar(admin: SupabaseClient, ciaId: number, usuario: string, clave: string, prueba: boolean, r: Resumen): Promise<Resumen> {
@@ -1450,7 +1456,7 @@ async function sincronizar(admin: SupabaseClient, ciaId: number, usuario: string
       if ((vacio(p.direccion) || p.direccion === '(sin dirección)') && f.direccion) d.direccion = f.direccion;
       if (vacio(p.codigo_postal) && f.cp) d.codigo_postal = f.cp;
       if (vacio(p.poblacion) && f.poblacion) d.poblacion = f.poblacion;
-      if (f.descripcion && (vacio(p.descripcion) || (String(p.descripcion).endsWith('...') && f.descripcion.length > String(p.descripcion).length))) d.descripcion = f.descripcion;
+      if (f.descripcion && (vacio(p.descripcion) || descripcionCortada(String(p.descripcion), f.descripcion))) d.descripcion = f.descripcion;
       if (f.urgente && !p.urgente) d.urgente = true;
       const { error } = await admin.from('partes').update(d).eq('id', p.id);
       if (error) console.error('ficha', p.numero_servicio, error.message);
@@ -1519,6 +1525,14 @@ Deno.serve(async (req) => {
     const lista = [];
     for (const n of numeros) lista.push({ servicio: n, ...((await estadoRepaso(ut, n)) ?? { est: null }) });
     return new Response(JSON.stringify({ cuenta: c.id, lista }), { headers: { 'Content-Type': 'application/json' } });
+  }
+  const verFicha = url.searchParams.get('verficha');
+  if (verFicha) { // solo lectura: lo que el robot lee de la ficha de un servicio
+    const c = CUENTAS.find((x) => x.id === (solo || 'VLL'))!;
+    const ses = new Sesion();
+    await entrar(ses, Deno.env.get(`SIGMA_${c.id}_USUARIO`)!, Deno.env.get(`SIGMA_${c.id}_CLAVE`)!);
+    const fx = leerFicha(await ses.pedir(`repasos1.php?reparacion=${verFicha}`));
+    return new Response(JSON.stringify({ servicio: verFicha, cuenta: c.id, descripcion: fx.descripcion, otros: fx.otros, bitacora: fx.bitacora.slice(-3) }), { headers: { 'Content-Type': 'application/json' } });
   }
   const verConfir = url.searchParams.get('verconfir');
   if (verConfir) { // solo lectura: qué dice el portal de la Confirmación de un servicio
