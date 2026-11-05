@@ -349,8 +349,8 @@
   .ficha-tabs button.on{color:var(--marca);border-bottom-color:var(--marca)}
   .ficha-tabs button:hover{color:var(--marca)}
   /* Pasos SIGMA (v2.54) */
-  .pasos-barra{display:flex;align-items:flex-start;gap:0;overflow-x:auto;padding:4px 0 10px;scrollbar-width:thin}
-  .paso{flex:0 0 auto;width:86px;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;padding:4px 2px;border-radius:8px;color:var(--texto);cursor:pointer;text-align:center}
+  .pasos-barra{display:flex;align-items:flex-start;gap:0;padding:4px 0 10px}
+  .paso{flex:1 1 0;min-width:0;display:flex;flex-direction:column;align-items:center;gap:3px;background:none;border:0;padding:4px 2px;border-radius:8px;color:var(--texto);cursor:pointer;text-align:center}
   .paso:hover{background:#FAFAF8}
   .paso .num{width:30px;height:30px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;border:2px solid #C9C4BA;color:var(--suave);background:#fff;font-size:14px}
   .paso b{font-size:12px;line-height:1.2}
@@ -362,7 +362,7 @@
   .paso.na .num{background:#ECEAE4}
   .paso.sel{background:var(--marca-suave)}
   .paso.sel b{color:var(--marca)}
-  .paso-linea{flex:1 0 10px;height:2px;background:var(--borde);margin-top:19px;min-width:10px}
+  .paso-linea{flex:0 0 6px;height:2px;background:var(--borde);margin-top:19px}
   .paso-det{border-top:1px solid var(--borde);padding-top:4px}
   .et.paso-et.ok{background:#DDF0E3;color:var(--ok)}.et.paso-et.parcial{background:#FDEBD8;color:#9A4E0B}
   .et.paso-et.pend{background:var(--marca-suave);color:var(--marca)}.et.paso-et.prox,.et.paso-et.na{background:#ECEAE4;color:#6B7178}
@@ -2299,7 +2299,7 @@ function panelFotosSigma(p, urls) {
       <div>📷 ${enPortal}${portal && p.sigma_fotos_en ? ` <small>· leído ${fHora(p.sigma_fotos_en)}</small>` : ''}</div>
       <button class="sec mini" ${leyendo ? 'disabled' : ''} onclick="comprobarFotosSigma('${p.id}')">${leyendo ? 'Leyendo el portal…' : '↻ Comprobar en SIGMA'}</button>
     </div>
-    ${portal?.fotos?.length ? `<details class="fs-lista-portal"><summary>Ver las ${portal.fotos.length} fotos que hay en SIGMA</summary>${portal.fotos.map((f) => `<span>${esc(f.codigo)} · ${f.momento === 'antes' ? 'Antes' : f.momento === 'despues' ? 'Después' : '¿?'} · ${esc(f.fecha || '')}</span>`).join('')}</details>` : ''}`;
+    ${portal?.fotos?.length ? `<details class="fs-lista-portal"><summary>Ver la lista de fotos que hay en SIGMA</summary>${portal.fotos.map((f) => `<span>${esc(f.codigo)} · ${f.momento === 'antes' ? 'Antes' : f.momento === 'despues' ? 'Después' : '¿?'} · ${esc(f.fecha || '')}</span>`).join('')}</details>` : ''}`;
   if (cerrado) return cabecera + `<div class="nota" style="margin-top:10px">El servicio está ${p.estado}: SIGMA ya no admite fotos nuevas desde KUBEL.</div>` + gruposFotos(urls, true);
   const sel = pasosFotos.filter((f) => pasosSel.has(f.id));
   const nEnviar = sel.filter((f) => f.tipo !== 'factura' && (!f.sigma_estado || f.sigma_estado === 'error')).length;
