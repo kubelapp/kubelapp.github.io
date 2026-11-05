@@ -24,6 +24,8 @@
 // v28 (05/11/2026): el «Informar cita» de un informe nunca informa una cita posterior a la visita: si el portal solo tiene citas
 //   más tarde (p. ej. un Repaso ya programado), se descarta solo. Antes la informaba como realizada (29456320). Necesario porque
 //   desde SQL 30 estos envíos salen sin aprobación de la oficina.
+// v29 (05/11/2026): los envíos se reservan de uno en uno, con tope de tiempo y tras entrar en el portal: los que no caben siguen en «aprobado»
+//   y los recoge el cron kubel-sigma-envios-cola (SQL 31). Un mensaje a tramitación interrumpido se reintenta solo una vez.
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
 // ?cuenta=VLL → solo esa cuenta.  ?enviar=1 → solo manda a SIGMA los envíos aprobados (sin leer el listado).
@@ -1068,32 +1070,54 @@ async function revisarIva(admin: SupabaseClient, s: Sesion, ciaId: number, cuent
 }
 
 const ORDEN_ENVIO: Record<string, number> = { informar_cita: 0, confirmacion: 1, repaso: 2, tramitacion: 3 };
-async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: string, usuario: string, clave: string, secretoAvisos: string) {
-  // Envíos que se quedaron a medias hace más de 10 min: no se reintentan solos (podría duplicarse en el portal)
+// v29 (05/11/2026): una función se corta a los 150 s (y varias peticiones pueden compartir el mismo trabajador, con un solo reloj).
+// Antes se reservaba toda la cola de golpe: con muchos envíos a la vez, los últimos quedaban en «enviando» sin haberse intentado
+// y acababan en «Envío interrumpido». Ahora se reserva de uno en uno y solo mientras quede tiempo: lo demás sigue en «aprobado»
+// y lo recoge otra pasada (cron kubel-sigma-envios-cola, SQL 31). Tampoco se reserva nada antes de haber entrado en el portal.
+const TOPE_ENVIOS_MS = 85000;       // desde que llega la petición: no se empieza otro envío a partir de aquí
+const TOPE_TRABAJADOR_MS = 110000;  // desde que arrancó el trabajador
+const MAX_PASADAS_ENVIANDO = 3;     // pasadas a la vez por cuenta (cada una tiene un solo envío en «enviando»)
+const ARRANQUE_TRABAJADOR = Date.now();
+async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: string, usuario: string, clave: string, secretoAvisos: string, inicio = Date.now()) {
+  const tope = Math.min(inicio + TOPE_ENVIOS_MS, ARRANQUE_TRABAJADOR + TOPE_TRABAJADOR_MS);
+  const hace10min = new Date(Date.now() - 10 * 60000).toISOString();
+  // Mensaje a tramitación a medias: se repite una sola vez (sin SMS al cliente; lo peor es que el tramitador lo reciba dos veces, y el portal no deja comprobarlo)
+  await admin.from('sigma_envios').update({ estado: 'aprobado', intentos: 1, resultado: 'Envío interrumpido: se reintenta solo una vez' })
+    .eq('estado', 'enviando').eq('tipo', 'tramitacion').eq('intentos', 0).lt('actualizado_en', hace10min);
+  // Los demás a medias: no se reintentan solos (podría duplicarse en el portal)
   await admin.from('sigma_envios').update({ estado: 'error', resultado: 'Envío interrumpido: comprueba en el portal si se guardó antes de reintentar' })
-    .eq('estado', 'enviando').lt('actualizado_en', new Date(Date.now() - 10 * 60000).toISOString());
-  const { data: cola } = await admin.from('sigma_envios')
-    .select('*, parte:partes!inner(numero_servicio, sigma_cuenta, estado)').eq('estado', 'aprobado').eq('parte.sigma_cuenta', cuenta)
-    .order('creado_en');
-  if (!cola?.length) return { enviados: 0, errores: 0 };
-  // Reservar (evita que dos pasadas manden lo mismo)
-  const { data: mios } = await admin.from('sigma_envios').update({ estado: 'enviando' })
-    .in('id', cola.map((x) => x.id)).eq('estado', 'aprobado').select('id');
-  const ids = new Set((mios || []).map((x) => x.id));
-  const lista = (cola as Envio[]).filter((x) => ids.has(x.id))
-    // Orden: Informar citas → Confirmación → Repaso → mensajes a tramitación (SIGMA no deja hacer Repaso con la confirmación pendiente)
-    .sort((a, b) => (ORDEN_ENVIO[a.tipo] ?? 9) - (ORDEN_ENVIO[b.tipo] ?? 9) || String(a.creado_en).localeCompare(String(b.creado_en)));
-  if (!lista.length) return { enviados: 0, errores: 0 };
-  const s = new Sesion();
-  await entrar(s, usuario, clave);
+    .eq('estado', 'enviando').lt('actualizado_en', hace10min);
+  // Reserva el siguiente envío que se pueda mandar. Sin tiempo o sin nada que mandar → null
+  let s: Sesion | null = null;
+  const siguiente = async (primero: boolean): Promise<Envio | null> => {
+    for (let vuelta = 0; vuelta < 20 && Date.now() < tope; vuelta++) {
+      const { data: cola } = await admin.from('sigma_envios')
+        .select('*, parte:partes!inner(numero_servicio, sigma_cuenta, estado)').eq('estado', 'aprobado').eq('parte.sigma_cuenta', cuenta);
+      if (!cola?.length) return null;
+      const { data: activos } = await admin.from('sigma_envios')
+        .select('parte_id, parte:partes!inner(sigma_cuenta)').eq('estado', 'enviando').eq('parte.sigma_cuenta', cuenta);
+      if (primero && (activos?.length ?? 0) >= MAX_PASADAS_ENVIANDO) return null;
+      const ocupados = new Set((activos || []).map((x) => x.parte_id));
+      // Orden: Informar citas → Confirmación → Repaso → mensajes a tramitación (SIGMA no deja hacer Repaso con la confirmación pendiente)
+      const e = (cola as Envio[])
+        .sort((a, b) => (ORDEN_ENVIO[a.tipo] ?? 9) - (ORDEN_ENVIO[b.tipo] ?? 9) || String(a.creado_en).localeCompare(String(b.creado_en)))
+        .find((x) => x.tipo === 'tramitacion' || !ocupados.has(x.parte_id)); // otra pasada está con este servicio: se respeta el orden
+      if (!e) return null;
+      if (!s) { const ses = new Sesion(); await entrar(ses, usuario, clave); s = ses; } // si falla, todo sigue en «aprobado»
+      // Reservar (evita que dos pasadas manden lo mismo)
+      const { data: mio } = await admin.from('sigma_envios').update({ estado: 'enviando' }).eq('id', e.id).eq('estado', 'aprobado').select('id');
+      if (mio?.length) return e;
+    }
+    return null;
+  };
   const fallidos = new Set<string>();
   let enviados = 0; const errores: string[] = [];
-  for (const e of lista) {
+  for (let e = await siguiente(true); e; e = await siguiente(false)) {
     try {
       if (fallidos.has(e.parte_id) && e.tipo !== 'tramitacion') throw new Error('No se envió porque falló el envío anterior de este servicio');
       if (e.tipo === 'repaso' && e.parte.estado === 'cerrado') throw new Error(CODIGOS_REPASO['3057']);
-      const r = e.tipo === 'repaso' ? await enviarRepaso(s, e) : e.tipo === 'tramitacion' ? await enviarTramitacion(s, e)
-        : e.tipo === 'confirmacion' ? await enviarConfirmacion(s, e) : await enviarInformarCita(s, e);
+      const r = e.tipo === 'repaso' ? await enviarRepaso(s!, e) : e.tipo === 'tramitacion' ? await enviarTramitacion(s!, e)
+        : e.tipo === 'confirmacion' ? await enviarConfirmacion(s!, e) : await enviarInformarCita(s!, e);
       if (e.tipo === 'confirmacion') await admin.from('partes').update({ sigma_confirmado_en: new Date().toISOString() }).eq('id', e.parte_id);
       if (e.tipo === 'repaso') await admin.from('partes').update({ sigma_iva_pendiente: null, sigma_iva_revisado_en: new Date().toISOString(), sigma_pide_contacto: false }).eq('id', e.parte_id);
       await admin.from('sigma_envios').update({ estado: 'enviado', resultado: r, enviado_en: new Date().toISOString(), intentos: 1 }).eq('id', e.id);
@@ -1473,6 +1497,7 @@ async function leerSecreto() {
 }
 
 Deno.serve(async (req) => {
+  const inicio = Date.now();
   const s = await leerSecreto();
   if (!s || req.headers.get('x-kubel-secreto') !== s) return new Response('no', { status: 401 });
   const url = new URL(req.url);
@@ -1514,7 +1539,7 @@ Deno.serve(async (req) => {
       continue;
     }
     if (soloEnviar) { // llamada inmediata al aprobar un envío en la oficina
-      try { resultados.push({ cuenta: c.id, ...(await procesarEnvios(admin, c.id, c.nombre, usuario, clave, s)) } as unknown as Resumen); }
+      try { resultados.push({ cuenta: c.id, ...(await procesarEnvios(admin, c.id, c.nombre, usuario, clave, s, inicio)) } as unknown as Resumen); }
       catch (err) { console.error('envíos', c.id, err); }
       continue;
     }
@@ -1527,7 +1552,7 @@ Deno.serve(async (req) => {
       r.ok = false; r.error = (err as Error).message;
     }
     if (!prueba) {
-      try { await procesarEnvios(admin, c.id, c.nombre, usuario, clave, s); } catch (err) { console.error('envíos', c.id, err); }
+      try { await procesarEnvios(admin, c.id, c.nombre, usuario, clave, s, inicio); } catch (err) { console.error('envíos', c.id, err); }
     }
     resultados.push(r);
     if (reg) {
