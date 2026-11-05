@@ -26,6 +26,7 @@
 //   desde SQL 30 estos envíos salen sin aprobación de la oficina.
 // v29 (05/11/2026): los envíos se reservan de uno en uno, con tope de tiempo y tras entrar en el portal: los que no caben siguen en «aprobado»
 //   y los recoge el cron kubel-sigma-envios-cola (SQL 31). Un mensaje a tramitación interrumpido se reintenta solo una vez.
+// v30 (05/11/2026): mensaje a tramitación sin motivo válido → «Consulta/comentario…» (motivo 1), el predeterminado (decisión del usuario).
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
 // ?cuenta=VLL → solo esa cuenta.  ?enviar=1 → solo manda a SIGMA los envíos aprobados (sin leer el listado).
@@ -820,7 +821,7 @@ async function enviarInformarCita(s: Sesion, e: Envio): Promise<string> {
 const MOTIVOS_TRAMITACION: Record<string, string> = { '1': 'Consulta/comentario servicio abierto o cerrado recientemente', '3': 'Ausencias/problemas atención citas', '4': 'Otros', '5': 'Respuesta a control de presupuestos' };
 async function enviarTramitacion(s: Sesion, e: Envio): Promise<string> {
   const n = e.parte.numero_servicio;
-  const motivo = MOTIVOS_TRAMITACION[String(e.motivo_codigo)] ? String(e.motivo_codigo) : '4';
+  const motivo = MOTIVOS_TRAMITACION[String(e.motivo_codigo)] ? String(e.motivo_codigo) : '1';
   const mensaje = e.comentario.trim();
   if (!mensaje) throw new Error('Falta el texto del mensaje');
   const pagina = await s.pedir(`sugestor.php?reparacion=${n}&modo=0&navid=`);
