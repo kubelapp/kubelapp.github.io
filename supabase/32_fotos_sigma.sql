@@ -117,3 +117,6 @@ grant execute on function public.aprobar_fotos_sigma(uuid[]), public.retirar_fot
 
 -- Por si algo queda en cola (el robot sube de una en una con tope de tiempo)
 select cron.schedule('kubel-sigma-fotos', '*/2 * * * *', 'select privado.lanzar_fotos()');
+
+-- 06/11/2026: las fotos que sube la oficina desde el ordenador no tienen informe del operario
+alter table public.fotos alter column informe_id drop not null;
