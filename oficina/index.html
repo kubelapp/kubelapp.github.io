@@ -2248,7 +2248,7 @@ function estadoPasos(p, fotos) {
 async function pintarPasos(parteId) {
   clearTimeout(pasosTimer);
   const caja = $('#pasos-sigma'); if (!caja || caja.dataset.parte !== parteId) return;
-  const [rp, rf, rd] = await Promise.all([
+  const [rp, rd, rf] = await Promise.all([
     sb.from('partes').select('id, numero_servicio, estado, sigma_cuenta, sigma_confirmado_en, sigma_ptto_estado, sigma_fotos, sigma_fotos_en, sigma_fotos_pedir, sigma_docs, sigma_envios(id, tipo, estado, creado_en)').eq('id', parteId).single(),
     sb.from('documentos_sigma').select('*').eq('parte_id', parteId).order('creado_en', { ascending: false }),
     sb.from('fotos').select('id, tipo, ruta, creado_en, informe_id, subido_por, sigma_estado, sigma_resultado, sigma_enviado_en').eq('parte_id', parteId).order('creado_en'),
