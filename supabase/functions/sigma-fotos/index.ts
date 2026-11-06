@@ -301,6 +301,9 @@ Deno.serve(async (req) => {
       const selects = [...sin.matchAll(/<select[^>]*name="([^"]*)"[^>]*>([\s\S]*?)<\/select>/gi)].map((m) => ({
         nombre: m[1], opciones: [...m[2].matchAll(/<option[^>]*value="([^"]*)"[^>]*>([\s\S]*?)<\/option>/gi)].map((o) => [o[1], limpio(o[2])]) }));
       const i = sin.search(/Documentos asociados/i);
+      const j = sin.lastIndexOf('Nuevo Documento</div>');
+      const scripts = [...pag.matchAll(/<script[\s\S]*?<\/script>/gi)].map((m) => m[0]).filter((x) => /recargar|listatipo|adm\./i.test(x)).map((x) => x.replace(/\s+/g, ' ').slice(0, 4000));
+      if (url.searchParams.get('paso2')) return json({ ruta, scripts, nuevo: j >= 0 ? sin.slice(j, sin.indexOf('</form>', j) + 7).replace(/<!--[\s\S]*?-->/g, '') : null });
       return json({ ruta, largo: pag.length, selects, forms, enlaces: [...sin.matchAll(/href="([^"]*\.php[^"]*)"/gi)].map((m) => m[1]).filter((h) => !/inicio|acceso/.test(h)).slice(0, 60),
         tabla: i >= 0 ? sin.slice(i, i + 6000) : sin.slice(0, 6000) });
     }
