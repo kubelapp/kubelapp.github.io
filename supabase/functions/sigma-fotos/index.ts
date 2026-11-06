@@ -1,4 +1,8 @@
-// KUBEL — Robot sigma-fotos (v5, 06/11/2026). Sube a SIGMA las fotos y los DOCUMENTOS (SQL 33: albarán con
+// KUBEL — Robot sigma-fotos (v6, 06/11/2026). v6: ?importar=1 TRAE A KUBEL las fotos que ya hay en el portal
+// (SQL 35, tabla fotos_portal; Storage portal/<parte>/<codigo>.jpg): lee la pestaña Fotografías de cada servicio
+// (nunca leídos primero; abiertos cada 12 h; «↻ Traer de SIGMA» de la oficina antes que nada) y descarga cada foto
+// con su enlace pdf.php, de una en una y con tope de tiempo. Solo lectura en el portal. ?verfoto=N&cuenta= = diagnóstico.
+// v5: Sube a SIGMA las fotos y los DOCUMENTOS (SQL 33: albarán con
 // «Adjuntar albarán», el resto con «Nuevo Documento» y su tipo) que la oficina envía desde la
 // pestaña «Pasos SIGMA» de la ficha del servicio (SQL 32).
 // fotos.sigma_estado: null sin enviar · aprobado en cola · enviando · enviado · error · omitido.
@@ -72,6 +76,18 @@ class Sesion {
     }
     throw new Error('Demasiadas redirecciones');
   }
+  // GET que devuelve los bytes tal cual (fotos)
+  async bajar(ruta: string, timeout = 45000): Promise<{ tipo: string; datos: Uint8Array }> {
+    let url = BASE + ruta;
+    for (let i = 0; i < 6; i++) {
+      const res = await fetch(url, { headers: { 'User-Agent': UA, Referer: BASE + 'fotservicio.php', Cookie: [...this.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, redirect: 'manual', signal: AbortSignal.timeout(timeout) });
+      for (const c of res.headers.getSetCookie()) { const kv = c.split(';')[0]; const j = kv.indexOf('='); if (j > 0) this.cookies.set(kv.slice(0, j).trim(), kv.slice(j + 1).trim()); }
+      if (res.status >= 300 && res.status < 400 && res.headers.get('location')) { url = new URL(res.headers.get('location')!, url).href; await res.body?.cancel(); continue; }
+      if (!res.ok) { await res.body?.cancel(); throw new Error(`El portal respondió ${res.status} al bajar la foto`); }
+      return { tipo: res.headers.get('content-type') || '', datos: new Uint8Array(await res.arrayBuffer()) };
+    }
+    throw new Error('Demasiadas redirecciones');
+  }
 }
 const pideClave = (html: string) => /name=["']?clave["'\s>]/i.test(html);
 async function entrar(s: Sesion, usuario: string, clave: string) {
@@ -86,21 +102,25 @@ async function entrar(s: Sesion, usuario: string, clave: string) {
 // (comentarios <!-- CODIGO DE FOTO -->, <!-- FECHA DE EMISION -->, <!-- MOMENTO DE LA CAPTURA -->).
 function fotosPortal(html: string) {
   const celda = (tr: string, nombre: string) => limpio((tr.match(new RegExp(`<!--\\s*${nombre}\\s*-->\\s*<td[^>]*>([\\s\\S]*?)<\\/td>`, 'i')) || [])[1] ?? '');
-  const filas: { codigo: string; momento: 'antes' | 'despues' | '?'; fecha: string }[] = [];
+  const filas: { codigo: string; momento: 'antes' | 'despues' | '?'; fecha: string; enlace?: string; comentario?: string; habitacion?: string; afectado?: string; tamano?: string }[] = [];
+  const nd = (t: string) => (t === '(N/D)' ? '' : t);
   for (const tr of html.split(/<tr[\s>]/i).slice(1)) {
     if (!/CODIGO DE FOTO/i.test(tr)) continue;
     const codigo = celda(tr, 'CODIGO DE FOTO');
     if (!codigo || codigo === '(N/D)') continue;
     const mom = celda(tr, 'MOMENTO DE LA CAPTURA');
     const momento = /despu/i.test(mom) ? 'despues' : /antes/i.test(mom) ? 'antes' : '?';
-    filas.push({ codigo, momento, fecha: celda(tr, 'FECHA DE EMISION').replace('(N/D)', '') });
+    const href = (tr.match(/<!--\s*ENLACE IMAGEN\s*-->[\s\S]*?href="([^"]+)"/i) || [])[1];
+    filas.push({ codigo, momento, fecha: celda(tr, 'FECHA DE EMISION').replace('(N/D)', ''),
+      enlace: href ? href.replace(/&amp;/g, '&') : undefined, comentario: nd(celda(tr, 'COMENTARIO')),
+      habitacion: nd(celda(tr, 'HABITACION')), afectado: nd(celda(tr, 'AFECTADO')), tamano: nd(celda(tr, 'TAMAÑO').replace(/\s+/g, ' ')) });
   }
   return filas;
 }
 const codigosFotos = (html: string) => new Set(fotosPortal(html).map((f) => f.codigo));
 const resumenPortal = (html: string) => {
   const f = fotosPortal(html);
-  return { total: f.length, antes: f.filter((x) => x.momento === 'antes').length, despues: f.filter((x) => x.momento === 'despues').length, fotos: f };
+  return { total: f.length, antes: f.filter((x) => x.momento === 'antes').length, despues: f.filter((x) => x.momento === 'despues').length, fotos: f.map(({ codigo, momento, fecha }) => ({ codigo, momento, fecha })) };
 };
 const oculto = (html: string, nombre: string) => (html.match(new RegExp(`name="${nombre}"\\s+value="([^"]*)"`)) || [])[1] ?? '';
 function avisosPortal(html: string) {
@@ -362,6 +382,105 @@ async function procesar(admin: SupabaseClient, secreto: string) {
   return { subidas, leidos, errores: Object.values(errores).flat().length, segundos: Math.round((Date.now() - t0) / 1000) };
 }
 
+// ---------- v6 · Traer a KUBEL las fotos del portal (SQL 35) ----------
+const TOPE_IMPORTAR_MS = 100000;
+const esImagen = (d: Uint8Array) => (d[0] === 0xFF && d[1] === 0xD8) ? 'image/jpeg' : (d[0] === 0x89 && d[1] === 0x50 && d[2] === 0x4E && d[3] === 0x47) ? 'image/png'
+  : (d[0] === 0x47 && d[1] === 0x49 && d[2] === 0x46) ? 'image/gif' : null;
+const fechaISO = (f: string) => { const m = f.match(/(\d{1,2})\/(\d{1,2})\/(\d{4})/); return m ? `${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}` : null; };
+const errorDeSesion = (m: string) => /No se pudo entrar|credenciales|Sesión caducada|respondió 5\d\d/i.test(m);
+
+// Baja una foto del portal. Si pdf.php devolviera una página en vez de la imagen, sigue su <img>.
+async function bajarFotoPortal(s: Sesion, enlace: string) {
+  let r = await s.bajar(enlace);
+  if (!esImagen(r.datos)) {
+    const html = dec.decode(r.datos);
+    if (pideClave(html)) throw new Error('Sesión caducada en SIGMA');
+    const src = (html.match(/<img[^>]+src="([^"]+)"/i) || [])[1];
+    if (!src) throw new Error('El portal no devolvió una imagen');
+    r = await s.bajar(new URL(src.replace(/&amp;/g, '&'), BASE + enlace).href.replace(BASE, ''));
+    if (!esImagen(r.datos)) throw new Error('El portal no devolvió una imagen');
+  }
+  return { datos: r.datos, mime: esImagen(r.datos)! };
+}
+
+async function importarFotos(admin: SupabaseClient) {
+  const t0 = Date.now();
+  const ahora = () => new Date().toISOString();
+  const ses = new Sesiones();
+  let leidos = 0, bajadas = 0, deKubel = 0, errores = 0; const avisos: string[] = [];
+  const cuentaOk = (c: string | null) => !!c && !!CUENTAS[c];
+  while (Date.now() - t0 < TOPE_IMPORTAR_MS) {
+    // a) una foto pendiente de bajar
+    const hace10 = new Date(Date.now() - 10 * 60000).toISOString();
+    const { data: pend, error: ep } = await admin.from('fotos_portal')
+      .select('id, parte_id, codigo, enlace, intentos, parte:partes!inner(numero_servicio, sigma_cuenta)')
+      .eq('estado', 'pendiente').or(`intentado_en.is.null,intentado_en.lt.${hace10}`).order('creado_en').limit(1);
+    if (ep) throw ep;
+    if (pend?.length) {
+      const f = pend[0] as unknown as { id: string; parte_id: string; codigo: string; enlace: string | null; intentos: number; parte: { numero_servicio: string; sigma_cuenta: string | null } };
+      const intentos = f.intentos + 1;
+      await admin.from('fotos_portal').update({ intentado_en: ahora(), intentos }).eq('id', f.id);
+      try {
+        if (!cuentaOk(f.parte.sigma_cuenta)) throw new Error('El servicio no tiene cuenta de SIGMA');
+        if (!f.enlace) throw new Error('El portal no da enlace para esta foto');
+        const r = await bajarFotoPortal(await ses.de(f.parte.sigma_cuenta!), f.enlace);
+        const ruta = `portal/${f.parte_id}/${f.codigo}.${r.mime === 'image/png' ? 'png' : r.mime === 'image/gif' ? 'gif' : 'jpg'}`;
+        const { error: eu } = await admin.storage.from('fotos').upload(ruta, r.datos, { contentType: r.mime, upsert: true });
+        if (eu) throw new Error('No se pudo guardar en KUBEL: ' + eu.message);
+        await admin.from('fotos_portal').update({ estado: 'descargada', ruta, mime: r.mime, bytes: r.datos.length, error: null, descargada_en: ahora() }).eq('id', f.id);
+        bajadas++;
+      } catch (err) {
+        const msg = (err as Error).message;
+        if (errorDeSesion(msg)) { avisos.push(`${f.parte.numero_servicio}: ${msg}`); break; } // se reintenta en la próxima pasada
+        await admin.from('fotos_portal').update({ error: msg, ...(intentos >= 3 ? { estado: 'error' } : {}) }).eq('id', f.id);
+        errores++;
+      }
+      continue;
+    }
+    // b) siguiente servicio a leer: pedidos por la oficina → nunca leídos → abiertos leídos hace > 12 h
+    const sel = () => admin.from('partes').select('id, numero_servicio, sigma_cuenta').in('sigma_cuenta', Object.keys(CUENTAS)).not('numero_servicio', 'is', null);
+    let { data: ps } = await sel().not('sigma_fotos_importar_pedir', 'is', null).order('sigma_fotos_importar_pedir').limit(1);
+    if (!ps?.length) ({ data: ps } = await sel().is('sigma_fotos_importar_en', null).order('creado_en', { ascending: false }).limit(1));
+    if (!ps?.length) ({ data: ps } = await sel().not('estado', 'in', '(cerrado,anulado)').lt('sigma_fotos_importar_en', new Date(Date.now() - 12 * 3600000).toISOString()).order('sigma_fotos_importar_en').limit(1));
+    if (!ps?.length) break;
+    const p = ps[0];
+    try {
+      const pag = await abrirFotos(await ses.de(p.sigma_cuenta!), p.numero_servicio);
+      const enPortal = fotosPortal(pag);
+      const { data: ya } = await admin.from('fotos_portal').select('codigo, estado').eq('parte_id', p.id);
+      const conocidas = new Map((ya || []).map((x) => [x.codigo, x.estado]));
+      // fotos que subió la propia KUBEL: «… · foto NNN» en fotos.sigma_resultado
+      const { data: propias } = await admin.from('fotos').select('id, ruta, sigma_resultado').eq('parte_id', p.id).eq('sigma_estado', 'enviado');
+      const deK = new Map<string, { id: string; ruta: string }>();
+      for (const x of propias || []) { const m = String(x.sigma_resultado || '').match(/foto (\d+)/); if (m) deK.set(m[1], { id: x.id, ruta: x.ruta }); }
+      const nuevas = enPortal.filter((f) => !conocidas.has(f.codigo)).map((f) => {
+        const k = deK.get(f.codigo);
+        if (k) deKubel++;
+        return { parte_id: p.id, codigo: f.codigo, momento: f.momento, fecha_foto: fechaISO(f.fecha), comentario: f.comentario || null, habitacion: f.habitacion || null,
+          afectado: f.afectado || null, tamano: f.tamano || null, enlace: f.enlace || null,
+          estado: k ? 'kubel' : 'pendiente', foto_id: k ? k.id : null, ruta: k ? k.ruta.replace(/^fotos\//, '') : null };
+      });
+      if (nuevas.length) { const { error } = await admin.from('fotos_portal').upsert(nuevas, { onConflict: 'parte_id,codigo', ignoreDuplicates: true }); if (error) throw error; }
+      // las que ya no están en el portal; y las retiradas que han vuelto
+      const codigos = new Set(enPortal.map((f) => f.codigo));
+      const fuera = [...conocidas].filter(([c, e]) => !codigos.has(c) && e !== 'retirada').map(([c]) => c);
+      if (fuera.length) await admin.from('fotos_portal').update({ estado: 'retirada' }).eq('parte_id', p.id).in('codigo', fuera);
+      const vuelven = [...conocidas].filter(([c, e]) => codigos.has(c) && e === 'retirada').map(([c]) => c);
+      if (vuelven.length) await admin.from('fotos_portal').update({ estado: 'pendiente', intentos: 0, error: null }).eq('parte_id', p.id).in('codigo', vuelven).is('ruta', null);
+      if (vuelven.length) await admin.from('fotos_portal').update({ estado: 'descargada' }).eq('parte_id', p.id).in('codigo', vuelven).not('ruta', 'is', null);
+      const r = resumenPortal(pag);
+      await admin.from('partes').update({ sigma_fotos_importar_en: ahora(), sigma_fotos_importar_pedir: null, sigma_fotos_importar_error: null, sigma_fotos: r, sigma_fotos_en: ahora() }).eq('id', p.id);
+      leidos++;
+    } catch (err) {
+      const msg = (err as Error).message;
+      if (errorDeSesion(msg)) { avisos.push(`${p.numero_servicio}: ${msg}`); break; }
+      await admin.from('partes').update({ sigma_fotos_importar_en: ahora(), sigma_fotos_importar_pedir: null, sigma_fotos_importar_error: msg }).eq('id', p.id);
+      errores++;
+    }
+  }
+  return { modo: 'importar', leidos, bajadas, deKubel, errores, avisos, segundos: Math.round((Date.now() - t0) / 1000) };
+}
+
 let secreto: string | null = null;
 async function leerSecreto() {
   if (secreto) return secreto;
@@ -387,6 +506,22 @@ Deno.serve(async (req) => {
       const i = pag.search(/CODIGO DE FOTO/i);
       return json({ servicio: ver, cuenta, resumen: resumenPortal(pag), fotos: fotosPortal(pag),
         formulario: /name="?fotos2/i.test(pag), fragmento: i >= 0 ? pag.slice(Math.max(0, i - 2500), i + 2500).replace(/\s+/g, ' ') : pag.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/\s+/g, ' ').slice(0, 5000) });
+    }
+    // v6: diagnóstico de solo lectura: baja la primera foto del portal y dice qué devuelve (no guarda nada)
+    const verfoto = url.searchParams.get('verfoto');
+    if (verfoto) {
+      const ses = new Sesiones();
+      const s2 = await ses.de(url.searchParams.get('cuenta') || 'VLL');
+      const fs = fotosPortal(await abrirFotos(s2, verfoto));
+      const f = fs.find((x) => x.enlace);
+      if (!f) return json({ servicio: verfoto, fotos: fs, nota: 'sin enlaces' });
+      const r = await s2.bajar(f.enlace!);
+      return json({ servicio: verfoto, fotos: fs, primera: f.codigo, tipo: r.tipo, bytes: r.datos.length, imagen: esImagen(r.datos),
+        inicio: esImagen(r.datos) ? [...r.datos.slice(0, 8)].map((b) => b.toString(16).padStart(2, '0')).join(' ') : dec.decode(r.datos.slice(0, 3000)).replace(/\s+/g, ' ') });
+    }
+    if (url.searchParams.get('importar')) {
+      const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
+      return json(await importarFotos(admin));
     }
     // Diagnóstico de solo lectura de la pestaña Documentos (solo GET)
     const verdocs = url.searchParams.get('verdocs');
