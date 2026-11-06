@@ -293,7 +293,8 @@ Deno.serve(async (req) => {
       let pag = await s2.pedir(ruta);
       if (url.searchParams.get('paso2')) {
         // «Nuevo Documento»: solo abre el formulario del documento, no guarda nada
-        pag = await s2.pedir('docservicio.php', { multi: multipart([['creardocumentos', 'Nuevo Documento'], ['reparacion', verdocs], ['opciones', ''],
+        const alb = url.searchParams.get('paso2') === 'albaran';
+        pag = await s2.pedir('docservicio.php', { multi: multipart([alb ? ['crearalbaran', 'Adjuntar albarán'] : ['creardocumentos', 'Nuevo Documento'], ['reparacion', verdocs], ['opciones', ''],
           ['mostrar_fecha', ''], ['mostrar_numfact', ''], ['ocultarmenu', ''], ['flag_modif_otro', '0'], ['navid', '']]) });
       }
       const sin = pag.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/\s+/g, ' ');
@@ -303,7 +304,8 @@ Deno.serve(async (req) => {
       const i = sin.search(/Documentos asociados/i);
       const j = sin.lastIndexOf('Nuevo Documento</div>');
       const scripts = [...pag.matchAll(/<script[\s\S]*?<\/script>/gi)].map((m) => m[0]).filter((x) => /recargar|listatipo|adm\./i.test(x)).map((x) => x.replace(/\s+/g, ' ').slice(0, 4000));
-      if (url.searchParams.get('paso2')) return json({ ruta, scripts, nuevo: j >= 0 ? sin.slice(j, sin.indexOf('</form>', j) + 7).replace(/<!--[\s\S]*?-->/g, '') : null });
+      const k = sin.search(/type="file"/i);
+      if (url.searchParams.get('paso2')) return json({ ruta, scripts, archivo: k >= 0 ? sin.slice(Math.max(0, k - 2500), k + 2000).replace(/<!--[\s\S]*?-->/g, '').replace(/<option[^>]*>[^<]*<\/option>/g, '') : null, nuevo: j >= 0 ? sin.slice(j, sin.indexOf('</form>', j) + 7).replace(/<!--[\s\S]*?-->/g, '') : null });
       return json({ ruta, largo: pag.length, selects, forms, enlaces: [...sin.matchAll(/href="([^"]*\.php[^"]*)"/gi)].map((m) => m[1]).filter((h) => !/inicio|acceso/.test(h)).slice(0, 60),
         tabla: i >= 0 ? sin.slice(i, i + 6000) : sin.slice(0, 6000) });
     }
