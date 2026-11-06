@@ -290,7 +290,12 @@ Deno.serve(async (req) => {
       const ses = new Sesiones();
       const s2 = await ses.de(cuenta);
       const ruta = url.searchParams.get('ruta') || `docservicio.php?reparacion=${verdocs}&modo=0&navid=`;
-      const pag = await s2.pedir(ruta);
+      let pag = await s2.pedir(ruta);
+      if (url.searchParams.get('paso2')) {
+        // «Nuevo Documento»: solo abre el formulario del documento, no guarda nada
+        pag = await s2.pedir('docservicio.php', { multi: multipart([['creardocumentos', 'Nuevo Documento'], ['reparacion', verdocs], ['opciones', ''],
+          ['mostrar_fecha', ''], ['mostrar_numfact', ''], ['ocultarmenu', ''], ['flag_modif_otro', '0'], ['navid', '']]) });
+      }
       const sin = pag.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/\s+/g, ' ');
       const forms = [...sin.matchAll(/<form[\s\S]*?<\/form>/gi)].map((m) => m[0].slice(0, 6000));
       const selects = [...sin.matchAll(/<select[^>]*name="([^"]*)"[^>]*>([\s\S]*?)<\/select>/gi)].map((m) => ({
