@@ -283,6 +283,22 @@ Deno.serve(async (req) => {
       return json({ servicio: ver, cuenta, resumen: resumenPortal(pag), fotos: fotosPortal(pag),
         formulario: /name="?fotos2/i.test(pag), fragmento: i >= 0 ? pag.slice(Math.max(0, i - 2500), i + 2500).replace(/\s+/g, ' ') : pag.replace(/<script[\s\S]*?<\/script>/gi, '').replace(/\s+/g, ' ').slice(0, 5000) });
     }
+    // Diagnóstico de solo lectura de la pestaña Documentos (solo GET)
+    const verdocs = url.searchParams.get('verdocs');
+    if (verdocs) {
+      const cuenta = url.searchParams.get('cuenta') || 'VLL';
+      const ses = new Sesiones();
+      const s2 = await ses.de(cuenta);
+      const ruta = url.searchParams.get('ruta') || `docservicio.php?reparacion=${verdocs}&modo=0&navid=`;
+      const pag = await s2.pedir(ruta);
+      const sin = pag.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/\s+/g, ' ');
+      const forms = [...sin.matchAll(/<form[\s\S]*?<\/form>/gi)].map((m) => m[0].slice(0, 6000));
+      const selects = [...sin.matchAll(/<select[^>]*name="([^"]*)"[^>]*>([\s\S]*?)<\/select>/gi)].map((m) => ({
+        nombre: m[1], opciones: [...m[2].matchAll(/<option[^>]*value="([^"]*)"[^>]*>([\s\S]*?)<\/option>/gi)].map((o) => [o[1], limpio(o[2])]) }));
+      const i = sin.search(/Documentos asociados/i);
+      return json({ ruta, largo: pag.length, selects, forms, enlaces: [...sin.matchAll(/href="([^"]*\.php[^"]*)"/gi)].map((m) => m[1]).filter((h) => !/inicio|acceso/.test(h)).slice(0, 60),
+        tabla: i >= 0 ? sin.slice(i, i + 6000) : sin.slice(0, 6000) });
+    }
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
     return json(await procesar(admin, s));
   } catch (err) {
