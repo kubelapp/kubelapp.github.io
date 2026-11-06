@@ -1,4 +1,5 @@
-// KUBEL — Robot sigma-fotos (v4, 06/11/2026). Sube a SIGMA las fotos que la oficina envía desde la
+// KUBEL — Robot sigma-fotos (v5, 06/11/2026). Sube a SIGMA las fotos y los DOCUMENTOS (SQL 33: albarán con
+// «Adjuntar albarán», el resto con «Nuevo Documento» y su tipo) que la oficina envía desde la
 // pestaña «Pasos SIGMA» de la ficha del servicio (SQL 32).
 // fotos.sigma_estado: null sin enviar · aprobado en cola · enviando · enviado · error · omitido.
 // Cada foto se añade en la pestaña «Fotografías» del servicio en el portal (fotservicio.php):
@@ -35,12 +36,12 @@ function bytes1252(s: string) {
   return new Uint8Array(out);
 }
 // Cuerpo multipart hecho a mano para controlar la codificación de los campos
-function multipart(campos: [string, string][], archivo?: { campo: string; nombre: string; datos: Uint8Array }) {
+function multipart(campos: [string, string][], archivo?: { campo: string; nombre: string; datos: Uint8Array; tipo?: string }) {
   const limite = '----KubelFotos' + crypto.randomUUID().replace(/-/g, '');
   const partes: Uint8Array[] = [];
   for (const [k, v] of campos) partes.push(bytes1252(`--${limite}\r\nContent-Disposition: form-data; name="${k}"\r\n\r\n${v}\r\n`));
   if (archivo) {
-    partes.push(bytes1252(`--${limite}\r\nContent-Disposition: form-data; name="${archivo.campo}"; filename="${archivo.nombre}"\r\nContent-Type: image/jpeg\r\n\r\n`));
+    partes.push(bytes1252(`--${limite}\r\nContent-Disposition: form-data; name="${archivo.campo}"; filename="${archivo.nombre}"\r\nContent-Type: ${archivo.tipo || 'image/jpeg'}\r\n\r\n`));
     partes.push(archivo.datos, bytes1252('\r\n'));
   }
   partes.push(bytes1252(`--${limite}--\r\n`));
@@ -113,6 +114,73 @@ async function abrirFotos(s: Sesion, n: string) {
   if (pideClave(pag)) throw new Error('Sesión caducada en SIGMA');
   if (/no\s+pertenece\s+al\s+profesional/i.test(pag)) throw new Error('SIGMA dice que el servicio ya no pertenece al profesional');
   return pag;
+}
+
+// ---------- Documentos (SQL 33) ----------
+const MAX_DOC = 3145728; // límite del portal en Documentos (3 MB)
+const paginaDocs = (n: string) => `docservicio.php?reparacion=${n}&modo=0&navid=`;
+async function abrirDocs(s: Sesion, n: string) {
+  const pag = await s.pedir(paginaDocs(n));
+  if (pideClave(pag)) throw new Error('Sesión caducada en SIGMA');
+  if (/no\s+pertenece\s+al\s+profesional/i.test(pag)) throw new Error('SIGMA dice que el servicio ya no pertenece al profesional');
+  return pag;
+}
+// Documentos asociados (una fila por casilla marcado[]) y estado del albarán:
+// albaran = true (hay albarán escaneado) · false (se puede adjuntar) · null (el portal aún no ofrece el apartado)
+function docsPortal(html: string) {
+  const sinCom = html.replace(/<!--[\s\S]*?-->/g, '');
+  const docs: { codigo: string; tipo: string; fecha: string; comentario: string; origen: string; tam: string }[] = [];
+  for (const tr of sinCom.split(/<tr[\s>]/i).slice(1)) {
+    const m = tr.match(/name="marcado\[\]"\s+value="(\d+)"/i);
+    if (!m) continue;
+    const c = [...tr.matchAll(/<td[^>]*class="tdet"[^>]*>([\s\S]*?)<\/td>/gi)].map((x) => limpio(x[1]));
+    docs.push({ codigo: m[1], tipo: c[1] ?? '', fecha: c[2] ?? '', comentario: (c[3] ?? '').replace(/^N\/D$/, ''), origen: c[4] ?? '', tam: c[5] ?? '' });
+  }
+  const alb = sinCom.match(/Albar[aá]n escaneado<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>/i);
+  const albaran = alb ? /href=/i.test(alb[1]) : /name="crearalbaran"/i.test(sinCom) ? false : null;
+  return { albaran, puede_albaran: /name="crearalbaran"/i.test(sinCom), docs };
+}
+const ocultosDocs = (n: string): [string, string][] => [['reparacion', n], ['opciones', ''], ['mostrar_fecha', ''], ['mostrar_numfact', ''], ['ocultarmenu', ''], ['flag_modif_otro', '0'], ['navid', '']];
+type Doc = { id: string; parte_id: string; tipo_codigo: string; tipo_nombre: string; comentario: string | null; ruta: string; nombre: string | null; mime: string | null; creado_en: string; sigma_intentos: number;
+  parte: { numero_servicio: string; sigma_cuenta: string | null; estado: string } };
+const nombreAscii = (x: string) => x.normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^A-Za-z0-9._-]+/g, '_').slice(-80) || 'documento';
+
+async function subirDoc(s: Sesion, d: Doc, datos: Uint8Array): Promise<{ texto: string; portal: ReturnType<typeof docsPortal> }> {
+  const n = d.parte.numero_servicio;
+  const antes = docsPortal(await abrirDocs(s, n));
+  const ext = (d.nombre || d.ruta).split('.').pop()!.toLowerCase();
+  const archivo = { campo: 'documentonew', nombre: nombreAscii(`${n}-${d.tipo_nombre}.${ext}`), datos, tipo: d.mime || 'application/octet-stream' };
+  const comprobar = async () => {
+    const despues = docsPortal(await abrirDocs(s, n));
+    if (d.tipo_codigo === 'ALB') return { ok: despues.albaran === true && antes.albaran !== true, despues, cod: 'albarán' };
+    const nuevo = despues.docs.find((x) => !antes.docs.some((y) => y.codigo === x.codigo));
+    return { ok: !!nuevo, despues, cod: nuevo?.codigo ?? '' };
+  };
+  if (d.tipo_codigo === 'ALB') {
+    if (antes.albaran === true) throw new Error('SIGMA ya tiene un albarán en este servicio (solo admite uno)');
+    if (!antes.puede_albaran) throw new Error('El portal aún no deja adjuntar el albarán en este servicio (suele aparecer tras la visita)');
+    await s.pedir('docservicio.php', { multi: multipart([['crearalbaran', 'Adjuntar albarán'], ...ocultosDocs(n)]) });
+  } else {
+    const paso2 = await s.pedir('docservicio.php', { multi: multipart([['creardocumentos', 'Nuevo Documento'], ...ocultosDocs(n)]) });
+    if (!new RegExp(`<option[^>]*value="${d.tipo_codigo}"`).test(paso2.replace(/<!--[\s\S]*?-->/g, ''))) throw new Error(`El portal no ofrece el tipo «${d.tipo_nombre}» en este servicio`);
+  }
+  const campos: [string, string][] = d.tipo_codigo === 'ALB'
+    ? [...ocultosDocs(n), ['nombredocumentonew', ''], ['grabar_albaran', 'Guardar documento']]
+    : [...ocultosDocs(n), ['listatipo', d.tipo_codigo], ['tituloinicial', ''], ['comentario', d.comentario || ''], ['nombredocumentonew', ''], ['grabar', 'Guardar documento']];
+  let respuesta = '';
+  try {
+    respuesta = await s.pedir('docservicio.php', { multi: multipart(campos, archivo), timeout: 60000 });
+  } catch (err) {
+    await esperar(8000);
+    const r = await comprobar();
+    if (r.ok) return { texto: `Subido a SIGMA (${d.tipo_nombre}) · ${r.cod} · comprobado tras un fallo del portal`, portal: r.despues };
+    throw new Error(`El portal no contestó (${(err as Error).message}) y el documento no aparece: no se subió`);
+  }
+  const r = await comprobar();
+  if (r.ok) return { texto: `Subido a SIGMA (${d.tipo_nombre})${r.cod ? ' · ' + r.cod : ''}`, portal: r.despues };
+  const avisos = avisosPortal(respuesta).filter((t) => !/Acrobat/i.test(t));
+  console.error('documento no aparece', n, d.id, avisos, respuesta.replace(/\s+/g, ' ').slice(0, 1500));
+  throw new Error(`El portal no guardó el documento${avisos.length ? ': ' + avisos.join(' · ') : ' (sin mensaje)'}`);
 }
 
 type Foto = {
@@ -231,14 +299,51 @@ async function procesar(admin: SupabaseClient, secreto: string) {
     }
   }
 
-  // 2) «↻ Comprobar en SIGMA»: leer lo que tiene el portal
+  // 1b) Documentos en cola, de uno en uno
+  const marcarDoc = (id: string, d: Record<string, unknown>) => admin.from('documentos_sigma').update({ ...d, sigma_actualizado_en: ahora() }).eq('id', id);
+  await admin.from('documentos_sigma').update({ sigma_estado: 'error', sigma_resultado: 'Subida interrumpida: mira la pestaña Documentos del servicio en SIGMA antes de reintentar' })
+    .eq('sigma_estado', 'enviando').lt('sigma_actualizado_en', new Date(Date.now() - 10 * 60000).toISOString());
+  while (Date.now() - t0 < TOPE_MS) {
+    const { data: sig, error } = await admin.from('documentos_sigma')
+      .select('id, parte_id, tipo_codigo, tipo_nombre, comentario, ruta, nombre, mime, creado_en, sigma_intentos, parte:partes!inner(numero_servicio, sigma_cuenta, estado)')
+      .eq('sigma_estado', 'aprobado').order('sigma_aprobado_en').order('creado_en').limit(1);
+    if (error) throw error;
+    if (!sig?.length) break;
+    const d = sig[0] as unknown as Doc;
+    const { data: mio } = await admin.from('documentos_sigma').update({ sigma_estado: 'enviando', sigma_actualizado_en: ahora() })
+      .eq('id', d.id).eq('sigma_estado', 'aprobado').select('id');
+    if (!mio?.length) continue;
+    const intentos = (d.sigma_intentos ?? 0) + 1;
+    const cuenta = d.parte.sigma_cuenta ?? '';
+    try {
+      if (['cerrado', 'anulado'].includes(d.parte.estado)) throw new Error(`El servicio está ${d.parte.estado}`);
+      if (!CUENTAS[cuenta]) throw new Error('El servicio no tiene cuenta de SIGMA (Valladolid/Palencia)');
+      const { data: blob, error: eDesc } = await admin.storage.from('fotos').download(d.ruta);
+      if (eDesc || !blob) throw new Error('No se encuentra el archivo del documento en KUBEL');
+      const datos = new Uint8Array(await blob.arrayBuffer());
+      if (datos.length > MAX_DOC) throw new Error('El documento pasa de 3 MB (límite de SIGMA)');
+      const r = await subirDoc(await ses.de(cuenta), d, datos);
+      await marcarDoc(d.id, { sigma_estado: 'enviado', sigma_resultado: r.texto, sigma_enviado_en: ahora(), sigma_intentos: intentos });
+      await admin.from('partes').update({ sigma_docs: { ...r.portal, leido: ahora() } }).eq('id', d.parte_id);
+      subidas++;
+    } catch (err) {
+      const msg = (err as Error).message;
+      await marcarDoc(d.id, { sigma_estado: 'error', sigma_resultado: msg, sigma_intentos: intentos });
+      (errores[cuenta || '?'] ??= []).push(`${d.parte.numero_servicio}: ${msg}`);
+    }
+  }
+
+  // 2) «↻ Comprobar en SIGMA»: leer lo que tiene el portal (fotos y documentos)
   while (Date.now() - t0 < TOPE_MS) {
     const { data: ps } = await admin.from('partes').select('id, numero_servicio, sigma_cuenta').not('sigma_fotos_pedir', 'is', null).limit(1);
     if (!ps?.length) break;
     const p = ps[0];
     try {
       if (!CUENTAS[p.sigma_cuenta ?? '']) throw new Error('sin cuenta');
-      const pag = await abrirFotos(await ses.de(p.sigma_cuenta!), p.numero_servicio);
+      const sp = await ses.de(p.sigma_cuenta!);
+      const pag = await abrirFotos(sp, p.numero_servicio);
+      const docs = docsPortal(await abrirDocs(sp, p.numero_servicio));
+      await admin.from('partes').update({ sigma_docs: { ...docs, leido: ahora() } }).eq('id', p.id);
       await guardarPortal(p.id, resumenPortal(pag));
       leidos++;
     } catch (err) {
@@ -306,7 +411,7 @@ Deno.serve(async (req) => {
       const scripts = [...pag.matchAll(/<script[\s\S]*?<\/script>/gi)].map((m) => m[0]).filter((x) => /recargar|listatipo|adm\./i.test(x)).map((x) => x.replace(/\s+/g, ' ').slice(0, 4000));
       const k = sin.search(/type="file"/i);
       if (url.searchParams.get('paso2')) return json({ ruta, scripts, archivo: k >= 0 ? sin.slice(Math.max(0, k - 2500), k + 2000).replace(/<!--[\s\S]*?-->/g, '').replace(/<option[^>]*>[^<]*<\/option>/g, '') : null, nuevo: j >= 0 ? sin.slice(j, sin.indexOf('</form>', j) + 7).replace(/<!--[\s\S]*?-->/g, '') : null });
-      return json({ ruta, largo: pag.length, selects, forms, enlaces: [...sin.matchAll(/href="([^"]*\.php[^"]*)"/gi)].map((m) => m[1]).filter((h) => !/inicio|acceso/.test(h)).slice(0, 60),
+      return json({ ruta, portal: docsPortal(pag), largo: pag.length, selects, forms, enlaces: [...sin.matchAll(/href="([^"]*\.php[^"]*)"/gi)].map((m) => m[1]).filter((h) => !/inicio|acceso/.test(h)).slice(0, 60),
         tabla: i >= 0 ? sin.slice(i, i + 6000) : sin.slice(0, 6000) });
     }
     const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
