@@ -280,9 +280,15 @@ class Sesiones {
 // clasificador (getResults del componente). El envío (confirm-fnol) lo hace sigma-sync al aprobar en KUBEL.
 const API_FNOL = 'https://mawmods.plataforma-smart.com/me';
 async function paseConfir(s: Sesion, n: string) {
-  const r = await fetch(BASE + `confirval.php?reparacion=${n}&modo=0`, { headers: { 'User-Agent': UA, Referer: BASE, Cookie: [...s.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, signal: AbortSignal.timeout(25000) });
-  const html = dec.decode(await r.arrayBuffer());
-  return (html.match(/<multiasistencia-fnol[^>]*\sut="([^"]+)"/i) || [])[1] || null;
+  // A veces el portal deja el pase vacío: se repite (la segunda vez pasando antes por la ficha, como haría una persona)
+  for (let i = 0; i < 3; i++) {
+    if (i) { await esperar(2500); try { await s.pedir(`repasos1.php?reparacion=${n}`); } catch { /* da igual */ } }
+    const r = await fetch(BASE + `confirval.php?reparacion=${n}&modo=0`, { headers: { 'User-Agent': UA, Referer: BASE + `repasos1.php?reparacion=${n}`, Cookie: [...s.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, signal: AbortSignal.timeout(25000) });
+    const html = dec.decode(await r.arrayBuffer());
+    const ut = (html.match(/<multiasistencia-fnol[^>]*\sut="([^"]+)"/i) || [])[1];
+    if (ut) return ut;
+  }
+  return null;
 }
 // deno-lint-ignore no-explicit-any
 async function fnolApi(ut: string, ruta: string, cuerpo: unknown): Promise<any> {
