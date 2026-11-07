@@ -531,8 +531,6 @@ Deno.serve(async (req) => {
     const verclasi = url.searchParams.get('verclasi');
     if (verclasi) {
       const cuenta = url.searchParams.get('cuenta') || 'VLL';
-      const ses = new Sesiones();
-      const s2 = await ses.de(cuenta);
       const API = 'https://mawmods.plataforma-smart.com/me';
       const permitido = (u: string) => /^https:\/\/([a-z0-9-]+\.)*(plataforma-smart\.com|multiasistencia\.com)\//i.test(u);
       const recorte = (t: string) => {
@@ -550,6 +548,8 @@ Deno.serve(async (req) => {
         const r = await fetch(asset, { headers: { 'User-Agent': UA, Referer: BASE + 'confirval.php' }, signal: AbortSignal.timeout(30000) });
         return json({ asset, status: r.status, cabeceras: Object.fromEntries(r.headers), ...recorte(await r.text()) });
       }
+      const ses = new Sesiones();
+      const s2 = await ses.de(cuenta);
       // Con el Referer de fotservicio.php el portal deja el pase (ut) vacío: se pide como lo hace sigma-sync
       const rc = await fetch(BASE + `confirval.php?reparacion=${verclasi}&modo=0`, { headers: { 'User-Agent': UA, Referer: BASE, Cookie: [...s2.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, signal: AbortSignal.timeout(25000) });
       const html = dec.decode(await rc.arrayBuffer());
