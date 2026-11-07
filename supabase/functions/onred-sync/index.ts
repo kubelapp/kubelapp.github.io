@@ -84,6 +84,8 @@ async function entrar(s: Sesion, usuario: string, clave: string) {
   const f = camposFormulario(html);
   f['__EVENTTARGET'] = '';
   f['__EVENTARGUMENT'] = '';
+  if ('__SCROLLPOSITIONX' in f && !f['__SCROLLPOSITIONX']) f['__SCROLLPOSITIONX'] = '0';
+  if ('__SCROLLPOSITIONY' in f && !f['__SCROLLPOSITIONY']) f['__SCROLLPOSITIONY'] = '0';
   f['ctl00$ContentPlaceHolder1$Login1$UserName'] = usuario;
   f['ctl00$ContentPlaceHolder1$Login1$Password'] = clave;
   f['ctl00$ContentPlaceHolder1$Login1$LoginButton'] = 'Inicia sesión';
@@ -177,6 +179,9 @@ async function diagnostico(s: Sesion, usuario: string, clave: string, modo: stri
   pasos.push({ paso: 'GET Login', status: r1.status, cookies: [...s.cookies.keys()], scriptManager: /ScriptManager1/.test(h1), campos: Object.keys(camposFormulario(h1)), captcha: /CaptchaCode|LBD_CaptchaDiv/i.test(h1) });
   const f = camposFormulario(h1);
   f['__EVENTTARGET'] = ''; f['__EVENTARGUMENT'] = ''; f['__LASTFOCUS'] = f['__LASTFOCUS'] ?? '';
+  // El navegador rellena la posición de la página con «0» antes de enviar; vacía, ASP.NET puede fallar al leerla
+  if ('__SCROLLPOSITIONX' in f && !f['__SCROLLPOSITIONX']) f['__SCROLLPOSITIONX'] = '0';
+  if ('__SCROLLPOSITIONY' in f && !f['__SCROLLPOSITIONY']) f['__SCROLLPOSITIONY'] = '0';
   f['ctl00$ContentPlaceHolder1$Login1$UserName'] = usuario;
   f['ctl00$ContentPlaceHolder1$Login1$Password'] = clave;
   f['ctl00$ContentPlaceHolder1$Login1$LoginButton'] = 'Inicia sesión';
