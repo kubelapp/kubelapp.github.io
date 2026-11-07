@@ -550,7 +550,9 @@ Deno.serve(async (req) => {
         const r = await fetch(asset, { headers: { 'User-Agent': UA, Referer: BASE + 'confirval.php' }, signal: AbortSignal.timeout(30000) });
         return json({ asset, status: r.status, tipo: r.headers.get('content-type'), ...recorte(await r.text()) });
       }
-      const html = await s2.pedir(`confirval.php?reparacion=${verclasi}&modo=0`);
+      // Con el Referer de fotservicio.php el portal deja el pase (ut) vacío: se pide como lo hace sigma-sync
+      const rc = await fetch(BASE + `confirval.php?reparacion=${verclasi}&modo=0`, { headers: { 'User-Agent': UA, Referer: BASE, Cookie: [...s2.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, signal: AbortSignal.timeout(25000) });
+      const html = dec.decode(await rc.arrayBuffer());
       const comp = (html.match(/<multiasistencia-fnol[^>]*>/i) || [])[0] || null;
       const ut = (comp?.match(/\sut="([^"]+)"/i) || [])[1] || null;
       const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/gi)].map((m) => m[1]);
