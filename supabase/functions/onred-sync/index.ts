@@ -172,6 +172,7 @@ async function diagnostico(s: Sesion, usuario: string, clave: string, modo: stri
   const forma = (v: string) => ({ largo: v.length, espaciosFuera: v !== v.trim(), espaciosDentro: /\s/.test(v.trim()), soloCifras: /^\d+$/.test(v.trim()) });
   pasos.push({ paso: 'secretos', usuario: forma(usuario), clave: { largo: clave.length, espaciosFuera: clave !== clave.trim() } });
   usuario = usuario.trim(); clave = clave.trim();
+  if (modo === 'malaclave') { clave = clave + 'x'; modo = 'ajax'; } // prueba: ¿qué dice el portal con una clave errónea?
   const headersBase = () => ({
     ...CH, 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'es-ES,es;q=0.9',
     ...(s.cookies.size ? { Cookie: [...s.cookies].map(([k, v]) => `${k}=${v}`).join('; ') } : {}),
