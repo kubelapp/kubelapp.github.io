@@ -1,4 +1,6 @@
-// KUBEL — Robot sigma-fotos (v6, 06/11/2026). v6: ?importar=1 TRAE A KUBEL las fotos que ya hay en el portal
+// KUBEL — Robot sigma-fotos (v7, 07/11/2026). v7: paso 2 · Confirmación: «Leer de SIGMA» (partes.sigma_confir_pedir, SQL 36)
+// lee la Confirmación (variante, clasificador de daños hecho o no, formulario que rellena el portal); ?leerconfir=N&cuenta= = diagnóstico.
+// v6 (06/11/2026). v6: ?importar=1 TRAE A KUBEL las fotos que ya hay en el portal
 // (SQL 35, tabla fotos_portal; Storage portal/<parte>/<codigo>.jpg): lee la pestaña Fotografías de cada servicio
 // (nunca leídos primero; abiertos cada 12 h; «↻ Traer de SIGMA» de la oficina antes que nada) y descarga cada foto
 // con su enlace pdf.php, de una en una y con tope de tiempo. Solo lectura en el portal. ?verfoto=N&cuenta= = diagnóstico.
@@ -269,6 +271,116 @@ class Sesiones {
   }
 }
 
+// ---------------------------------------------------------------- 2 · Confirmación (v7, 07/11/2026, SQL 36)
+// SOLO LECTURA. Pestaña Confirmación (confirval.php) = componente <multiasistencia-fnol> + servicio JSON de
+// mawmods.plataforma-smart.com/me con el pase «ut» de la página (se pide con Referer del portal: con el de
+// fotservicio.php el portal lo deja vacío). Variante completa: el clasificador de daños (urlClasi, enlace firmado
+// que se abre fuera del portal) guarda su resultado, que se lee en urlWs (MAAnalizador/ObtenerResultado).
+// Con el resultado, fnol-data-sorter da los datos del formulario. Lo que el formulario rellena solo sale del
+// clasificador (getResults del componente). El envío (confirm-fnol) lo hace sigma-sync al aprobar en KUBEL.
+const API_FNOL = 'https://mawmods.plataforma-smart.com/me';
+async function paseConfir(s: Sesion, n: string) {
+  const r = await fetch(BASE + `confirval.php?reparacion=${n}&modo=0`, { headers: { 'User-Agent': UA, Referer: BASE, Cookie: [...s.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, signal: AbortSignal.timeout(25000) });
+  const html = dec.decode(await r.arrayBuffer());
+  return (html.match(/<multiasistencia-fnol[^>]*\sut="([^"]+)"/i) || [])[1] || null;
+}
+// deno-lint-ignore no-explicit-any
+async function fnolApi(ut: string, ruta: string, cuerpo: unknown): Promise<any> {
+  for (let i = 0; i < 2; i++) {
+    const r = await fetch(`${API_FNOL}/${ruta}`, { method: 'POST', body: JSON.stringify(cuerpo), signal: AbortSignal.timeout(20000),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ut}`, Version: '3.0.0', 'User-Agent': UA, Origin: 'https://web.multiasistencia.com', Referer: BASE + 'confirval.php' } });
+    const t = await r.text();
+    let j; try { j = JSON.parse(t); } catch { throw new Error(`Respuesta rara del servicio de Confirmación (${r.status})`); }
+    // «PASARELA: Error interno…» es pasajero: se repite una vez
+    if (!j?.success && i === 0 && /PASARELA/i.test(JSON.stringify(j?.metadata?.errorCodes || ''))) { await esperar(3000); continue; }
+    return j;
+  }
+}
+const codigosFnol = (j: { metadata?: { errorCodes?: { code?: unknown }[] } }) => (j?.metadata?.errorCodes || []).flatMap((x) => (Array.isArray(x?.code) ? x.code : [x?.code])).filter(Boolean).map(String);
+// deno-lint-ignore no-explicit-any
+type Expediente = Record<string, any>;
+function videoPeritacion(json: { Expediente: Expediente }) {
+  const ac = (json.Expediente.Daños || []).filter((o: Expediente) => !o.Rechazado).map((o: Expediente) => ({ requestExpert: o.SolicitarPerito, reasonExpert: o.MotivoPerito }));
+  return { file: { requestExpert: json.Expediente.SolicitarPerito, reasonExpert: json.Expediente.MotivoPerito }, acceptedDamages: ac };
+}
+// Lo que el portal rellena solo a partir del clasificador (getResults del componente)
+function propuestaConfir(ex: Expediente) {
+  const d = (ex.Daños || []) as Expediente[];
+  const si = (v: unknown) => v === true || v === 'True';
+  const perj = !!ex.Perjudicados;
+  return {
+    respsin: perj ? '0' : ex.TerceroCausante?.ExisteTC ? '1' : '0', respsin_fijo: perj,
+    corrosion: si(ex.ExisteCorrosion) ? '1' : '0', limite: si(ex.SuperaLimite) ? '1' : '0',
+    perito: d.some((r) => r.SolicitarPerito && !r.Rechazado) ? '1' : '0', estetica: d.some((r) => r.AplicarEstetica) ? '1' : '0',
+    robodenuncia: '0', extdefecto: ex.FaltaMantenimiento ? '1' : '0', perjudicado: '0',
+    pide_tercero: perj || !!ex.TerceroCausante?.ExisteTC,
+  };
+}
+function resumenClasi(ex: Expediente) {
+  return {
+    causa: ex.DescripcionCausa ?? null, grupo: ex.DescripcionGrupoCausa ?? null, notas: Array.isArray(ex.NotasCausa) ? ex.NotasCausa : ex.NotasCausa ? [ex.NotasCausa] : [],
+    danos: ((ex.Daños || []) as Expediente[]).map((r) => ({
+      bien: r.CodigoBien, descripcion: r.DescripcionDaño, tipo: r.DescripcionTipoDaño, naturaleza: r.DescripcionNaturalezaDaño,
+      gremio: r.DescripcionGremio, consecuenciales: r.DescripcionGremiosConsecuenciales || [],
+      cubierto: !r.Rechazado && !(r.CodigosRechazo || []).length, rechazo: [].concat(r.MotivoRechazo || []).filter(Boolean),
+      parcial: r.RechazoParcial || '', total: r.RechazoTotal || '', perito: !!r.SolicitarPerito, estetica: !!r.AplicarEstetica,
+    })),
+    perjudicados: !!ex.Perjudicados, tercero_causante: !!ex.TerceroCausante?.ExisteTC, perito: !!ex.SolicitarPerito, motivo_perito: ex.TextoMotivoPerito || ex.MotivoPerito || '',
+    supera_limite: ex.SuperaLimite === true || ex.SuperaLimite === 'True', corrosion: ex.ExisteCorrosion === true || ex.ExisteCorrosion === 'True',
+    falta_mantenimiento: !!ex.FaltaMantenimiento, stop: !!ex.StopConfirmacion, segunda_vivienda: !!ex.SegundaVivienda,
+  };
+}
+async function leerConfirmacion(s: Sesion, n: string): Promise<Record<string, unknown>> {
+  const ut = await paseConfir(s, n);
+  if (!ut) throw new Error('No se pudo abrir la pestaña Confirmación de este servicio');
+  const ini = await fnolApi(ut, 'fnol-initial-data', { reparation: n });
+  const leerFt = async () => { try { const f = await fnolApi(ut, 'fasttrack-initial-data', { reparation: n }); return f?.success ? f.data : null; } catch { return null; } };
+  if (!ini?.success) {
+    if (codigosFnol(ini).includes('FASTTRACK')) {
+      const f = await leerFt();
+      if (!f) return { estado: 'no_aplica', motivo: 'El portal no da los datos de la confirmación rápida' };
+      return { estado: 'rapida', siniestro: f.sinisterData ?? null, confirmacion: f.confirmationData ?? null, aviso: f.infoMessage || null,
+        pide_contacto: String(f.contactClient) === '1', pide_primera_visita: String(f.firstVisit) === '1' };
+    }
+    return { estado: 'no_aplica', motivo: codigosFnol(ini).join(' · ') || 'El portal no deja confirmar ahora' };
+  }
+  const d = ini.data || {};
+  const leerWs = async () => {
+    if (!d.urlWs) return { hecho: false, motivo: 'SIGMA no da el resultado del clasificador' };
+    try {
+      const w = JSON.parse(await (await fetch(d.urlWs, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(20000) })).text());
+      if (w?.Respuesta?.Resultado !== 'OK') return { hecho: false, motivo: w?.Respuesta?.CodigoError || 'sin resultado' };
+      return { hecho: true, json: w };
+    } catch (err) { return { hecho: false, motivo: `No se pudo leer el resultado (${(err as Error).message})` }; }
+  };
+  if (String(d.confirmed) === '1') {
+    const w = await leerWs();
+    return { estado: 'confirmado', confirmacion: d.confirmationData ?? null, siniestro: d.sinisterData ?? null,
+      clasificador: w.hecho ? { hecho: true, ...resumenClasi(w.json!.Expediente) } : { hecho: false } };
+  }
+  const ft = await leerFt();
+  const base = {
+    estado: 'completa', siniestro: ft?.sinisterData ?? d.sinisterData ?? null,
+    confirmacion: { ...(ft?.confirmationData || {}), ...Object.fromEntries(Object.entries(d.confirmationData || {}).filter(([, v]) => v !== '' && v != null)) },
+    limite: String(d.limitValue ?? d.confirmationData?.limitValue ?? '').trim() || null,
+    url_clasi: d.urlClasi ? (/visualizacion=/.test(d.urlClasi) ? d.urlClasi : d.urlClasi + '&visualizacion=0') : null,
+    aviso_tramitacion: d.errorMessage === 'MENSA_CONFIRPOSITIVA',
+  };
+  const w = await leerWs();
+  if (!w.hecho) return { ...base, clasificador: { hecho: false, motivo: w.motivo } };
+  const ex = w.json!.Expediente;
+  const so = await fnolApi(ut, 'fnol-data-sorter', { reparation: n, gCause: ex.GrupoCausa, cCause: ex.CodigoCausa, warranty: ex.Daños?.[0]?.Garantias?.[0], videoExpertise: videoPeritacion(w.json!) });
+  const sd = so?.data || {};
+  return { ...base, clasificador: { hecho: true, ...resumenClasi(ex) }, propuesta: propuestaConfir(ex),
+    formulario: so?.success ? {
+      pide_contacto: String(sd.clientContact) === '1', pide_primera_visita: String(sd.firstVisit) === '1',
+      tercero: sd.thirdPartyData ?? null, tipos_tercero: sd.injuredList ?? d.injuredList ?? [],
+      localizacion: String(sd.isPositiveConfirmationOk) === '1' && String(sd.seeLocation) !== '1',
+      videoperitacion: String(sd.visualizationData?.videoExpertise?.display) === '1',
+      con_tercero: ['2', '3', '4', '5'].includes(String((sd.confirmationData || d.confirmationData || {}).typeInvolved)) || Number(sd.confirmFnol ?? d.confirmFnol) === 1,
+    } : { error: codigosFnol(so).join(' · ') || 'fnol-data-sorter no respondió' } };
+}
+
 async function procesar(admin: SupabaseClient, secreto: string) {
   const t0 = Date.now();
   const ahora = () => new Date().toISOString();
@@ -369,6 +481,22 @@ async function procesar(admin: SupabaseClient, secreto: string) {
     } catch (err) {
       await admin.from('partes').update({ sigma_fotos_pedir: null, sigma_fotos: { error: (err as Error).message }, sigma_fotos_en: ahora() }).eq('id', p.id);
     }
+  }
+
+  // 3) v7 (SQL 36): «Leer de SIGMA» del paso 2 · Confirmación (partes.sigma_confir_pedir). Solo lectura.
+  while (Date.now() - t0 < TOPE_MS) {
+    const { data: ps } = await admin.from('partes').select('id, numero_servicio, sigma_cuenta, sigma_confirmado_en').not('sigma_confir_pedir', 'is', null).limit(1);
+    if (!ps?.length) break;
+    const p = ps[0];
+    let r: Record<string, unknown>;
+    try {
+      if (!CUENTAS[p.sigma_cuenta ?? '']) throw new Error('El servicio no tiene cuenta de SIGMA');
+      r = await leerConfirmacion(await ses.de(p.sigma_cuenta!), p.numero_servicio);
+    } catch (err) { r = { estado: 'error', error: (err as Error).message }; }
+    const upd: Record<string, unknown> = { sigma_confir: { ...r, leido: ahora() }, sigma_confir_en: ahora(), sigma_confir_pedir: null };
+    if (r.estado === 'confirmado' && !p.sigma_confirmado_en) upd.sigma_confirmado_en = ahora();
+    await admin.from('partes').update(upd).eq('id', p.id);
+    leidos++;
   }
 
   for (const [cuenta, lista] of Object.entries(errores)) {
@@ -522,6 +650,11 @@ Deno.serve(async (req) => {
     if (url.searchParams.get('importar')) {
       const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
       return json(await importarFotos(admin));
+    }
+    const verconfir2 = url.searchParams.get('leerconfir');
+    if (verconfir2) { // v7: lo mismo que guarda «Leer de SIGMA», sin guardar nada
+      const ses = new Sesiones();
+      return json(await leerConfirmacion(await ses.de(url.searchParams.get('cuenta') || 'VLL'), verconfir2));
     }
     // v6.1 (07/11): diagnóstico de SOLO LECTURA de la Confirmación completa (confirval.php y clasificador de daños).
     //   ?verclasi=N&cuenta=VLL → atributos del componente, scripts, fnol-initial-data en bruto, urlWs y urlClasi.

@@ -29,6 +29,7 @@
 // v31 (05/11/2026): la descripción cortada por la lista (sin «...», 29109162) se sustituye por la completa de la ficha; ?verficha=N&cuenta=VLL = lectura de la ficha.
 // v30 (05/11/2026): mensaje a tramitación sin motivo válido → «Consulta/comentario…» (motivo 1), el predeterminado (decisión del usuario).
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
+// v32 (07/11/2026): Confirmación COMPLETA desde KUBEL (confirmarCompleta, SQL 36): si el envío trae confir_datos.kubel, manda confirm-fnol.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
 // ?cuenta=VLL → solo esa cuenta.  ?enviar=1 → solo manda a SIGMA los envíos aprobados (sin leer el listado).
 import { createClient, SupabaseClient } from 'npm:@supabase/supabase-js@2.45.4';
@@ -476,7 +477,7 @@ const MOTIVOS_CITA: Record<string, string[]> = { V: ['609', '611', '604', '601']
 type Envio = {
   id: string; parte_id: string; tipo: 'repaso' | 'informar_cita' | 'tramitacion' | 'confirmacion'; motivo_codigo: string | null; motivo_texto: string | null;
   fecha: string | null; hora: string | null; resolucion: string | null; resolucion_motivo: string | null;
-  cita_fecha: string | null; cita_hora: string | null; comentario: string; contacto_en?: string | null; confir_variante?: 'rapida' | 'completa' | null; creado_en?: string; parte: { numero_servicio: string; sigma_cuenta: string; estado?: string };
+  cita_fecha: string | null; cita_hora: string | null; comentario: string; contacto_en?: string | null; confir_variante?: 'rapida' | 'completa' | null; confir_datos?: Record<string, unknown> | null; creado_en?: string; parte: { numero_servicio: string; sigma_cuenta: string; estado?: string };
 };
 
 // Traduce los códigos de error del servicio de Repaso. Si el código no es conocido (p. ej. "68"),
@@ -848,6 +849,7 @@ async function enviarTramitacion(s: Sesion, e: Envio): Promise<string> {
 const MAX_CONFIR = 8; // informes por cuenta y pasada
 const CONFIR_OK = 'CONFIRVALREDAZPOK';
 let TEXTOS_FNOL: Record<string, string> | null = null;
+let TXT_TERMINAR = 'Terminar';
 async function cargarTextosFnol() {
   if (TEXTOS_FNOL) return;
   try {
@@ -857,6 +859,8 @@ async function cargarTextosFnol() {
     const j = r.ok ? await r.json() : null;
     const err = j?.error ?? j?.data?.error;
     if (err && typeof err === 'object') TEXTOS_FNOL = err as Record<string, string>;
+    const todo = (j?.data && typeof j.data === 'object' ? j.data : j) as Record<string, unknown>;
+    if (typeof todo?.TXTTERMINAR === 'string') TXT_TERMINAR = todo.TXTTERMINAR;
   } catch (err) { console.error('textos Confirmación', (err as Error).message); }
 }
 function textoFnol(codes: { code?: unknown; append?: unknown }[] | undefined) {
@@ -936,7 +940,10 @@ async function enviarConfirmacion(s: Sesion, e: Envio): Promise<string> {
   const est = await estadoConfirmacion(ut, n);
   if (est.estado === 'confirmado') return e.confir_variante === 'completa' ? 'Confirmación hecha en el portal (comprobado)' : 'El servicio ya estaba confirmado en SIGMA: no se ha enviado nada';
   if (est.estado === 'no_aplica') throw new Error(`El portal no deja confirmar ahora: ${est.motivo}`);
-  if (est.estado === 'completa') throw new Error('Confirmación completa: aún no está hecha en el portal. Hazla en la pestaña Confirmación y vuelve a aprobar');
+  if (est.estado === 'completa') {
+    if (e.confir_datos?.kubel) return await confirmarCompleta(ut, n, e); // v32: hecha desde «Pasos SIGMA» de KUBEL
+    throw new Error('Confirmación completa: aún no está hecha en el portal. Hazla en la pestaña Confirmación y vuelve a aprobar');
+  }
   // Variante rápida
   const cuerpo: Record<string, unknown> = { infoConfirmation: '', reparation: n };
   const ahora = minutoMadrid();
@@ -961,6 +968,96 @@ async function enviarConfirmacion(s: Sesion, e: Envio): Promise<string> {
   }
   console.error('fasttrack-confirm', n, JSON.stringify(res).slice(0, 1500));
   throw new Error('Al confirmar: ' + textoFnol(codigos));
+}
+
+// v32 (07/11/2026): Confirmación COMPLETA desde KUBEL (paso 2 de «Pasos SIGMA», SQL 36). Repite lo que hace el componente
+// <multiasistencia-fnol> del portal al pulsar «Terminar»: lee el resultado del clasificador de daños (urlWs; lo hace la oficina
+// con el enlace firmado urlClasi), pide fnol-data-sorter, arma el formulario (buildForm + getResults del componente: lo que
+// decide el clasificador no se toca) con lo que la oficina pone en KUBEL (responsable si el clasificador lo deja libre,
+// datos del tercero, localización) y las fechas (primera visita = la citada; contacto si SIGMA lo pide) y manda confirm-fnol.
+// Después vuelve a leer fnol-initial-data: solo se da por confirmado si el portal dice confirmed = '1'.
+async function confirmarCompleta(ut: string, n: string, e: Envio): Promise<string> {
+  const ini = await apiFnol(ut, 'fnol-initial-data', { reparation: n });
+  const d = ini?.data || {};
+  if (!ini?.success) throw new Error(`El portal no deja confirmar ahora: ${textoFnol(ini?.metadata?.errorCodes)}`);
+  if (String(d.confirmed) === '1') return 'El servicio ya estaba confirmado en SIGMA: no se ha enviado nada';
+  if (!d.urlWs) throw new Error('SIGMA no da el resultado del clasificador de daños de este servicio');
+  let ws;
+  try { ws = JSON.parse(await (await fetch(d.urlWs, { headers: { 'User-Agent': UA }, signal: AbortSignal.timeout(20000) })).text()); }
+  catch (err) { throw new Error(`No se pudo leer el resultado del clasificador (${(err as Error).message})`); }
+  if (ws?.Respuesta?.Resultado !== 'OK') throw new Error(`El clasificador de daños aún no está hecho: ábrelo desde Pasos SIGMA y complétalo (${ws?.Respuesta?.CodigoError || 'sin resultado'})`);
+  // deno-lint-ignore no-explicit-any
+  const ex = ws.Expediente as Record<string, any>;
+  // deno-lint-ignore no-explicit-any
+  const danos = (ex.Daños || []) as Record<string, any>[];
+  if (ex.StopConfirmacion) throw new Error('El clasificador para la confirmación (StopConfirmacion): hazla en el portal o llama a tramitación');
+  const video = { file: { requestExpert: ex.SolicitarPerito, reasonExpert: ex.MotivoPerito }, acceptedDamages: danos.filter((o) => !o.Rechazado).map((o) => ({ requestExpert: o.SolicitarPerito, reasonExpert: o.MotivoPerito })) };
+  const so = await apiFnol(ut, 'fnol-data-sorter', { reparation: n, gCause: ex.GrupoCausa, cCause: ex.CodigoCausa, warranty: danos[0]?.Garantias?.[0], videoExpertise: video });
+  if (!so?.success || !so.data) throw new Error(`fnol-data-sorter: ${textoFnol(so?.metadata?.errorCodes)}`);
+  const sd = so.data;
+  const vis = sd.visualizationData || {};
+  if (String(vis.videoExpertise?.display) === '1') throw new Error('SIGMA pide datos de videoperitación: de momento esta confirmación hay que terminarla en el portal');
+  // buildForm (el orden de los campos es el del portal)
+  const ini0 = (k: string) => (String(vis[k]?.display) !== '1' && sd.swRadio ? '' : vis[k]?.content);
+  const f: Record<string, unknown> = {
+    respsin: ini0('responsible'), perjudicado: ini0('injured'), extdefecto: ini0('extDefect'), robodenuncia: ini0('robberyReport'),
+    estetica: ini0('aesthetics'), corrosion: ini0('rust'), perito: ini0('expert'), limite: '', videoPeritacion: '0',
+  };
+  const tp = sd.thirdPartyData || {};
+  const conTercero = ['2', '3', '4', '5'].includes(String(sd.confirmationData?.typeInvolved)) || Number(sd.confirmFnol) === 1;
+  if (conTercero) Object.assign(f, { tipo: tp.type ?? '', nombre: tp.name ?? '', direccion: tp.address ?? '', apellido1: tp.surname ?? '', cp: tp.postalCode ?? '', apellido2: tp.secondSurname ?? '', poblacion: tp.municipality ?? '', telefono: tp.phoneNumber ?? '' });
+  if (String(sd.isPositiveConfirmationOk) === '1' && String(sd.seeLocation) !== '1') f.txtlocalizacion = '';
+  const pideCc = String(sd.clientContact) === '1', pidePv = String(sd.firstVisit) === '1';
+  // getResults: lo que decide el clasificador
+  const si = (v: unknown) => v === true || v === 'True';
+  const k = (e.confir_datos!.kubel || {}) as Record<string, string>;
+  if (ex.Perjudicados) f.respsin = '0';
+  else f.respsin = k.respsin === '0' || k.respsin === '1' ? k.respsin : ex.TerceroCausante?.ExisteTC ? '1' : '0';
+  f.corrosion = si(ex.ExisteCorrosion) ? '1' : '0';
+  f.limite = si(ex.SuperaLimite) ? '1' : '0';
+  f.perito = danos.some((r) => r.SolicitarPerito && !r.Rechazado) ? '1' : '0';
+  f.estetica = danos.some((r) => r.AplicarEstetica) ? '1' : '0';
+  f.robodenuncia = '0';
+  f.extdefecto = ex.FaltaMantenimiento ? '1' : '0';
+  f.perjudicado = '0';
+  // Datos de la oficina (solo los campos que el portal deja escribir)
+  if (conTercero) for (const c of ['tipo', 'nombre', 'apellido1', 'apellido2', 'telefono', 'direccion', 'cp', 'poblacion']) if (typeof k[c] === 'string') f[c] = k[c].trim();
+  if ('txtlocalizacion' in f && typeof k.txtlocalizacion === 'string') f.txtlocalizacion = k.txtlocalizacion.trim();
+  if ((ex.Perjudicados || f.respsin === '1') && (!conTercero || !String(f.tipo || ''))) throw new Error('Falta el tipo de perjudicado / tercero: elígelo en Pasos SIGMA y vuelve a aprobar');
+  // Fechas: día y mes sin cero, hora y minuto con dos cifras (encastrables-date-hour-field)
+  const ahora = minutoMadrid();
+  let cc: string | null = null, pv: string | null = null;
+  if (pideCc) {
+    if (!e.contacto_en) throw new Error('SIGMA pide la fecha y hora de contacto con el cliente: rellénala y vuelve a aprobar');
+    cc = madrid(e.contacto_en);
+    if (cc > ahora) throw new Error('La fecha de contacto con el cliente no puede ser posterior a ahora');
+    const x = fechaSigma(cc.slice(0, 10), cc.slice(11, 16));
+    Object.assign(f, { diacc: x.day, mescc: x.month, anocc: x.year, horacc_h: x.hour, horacc_m: x.minute });
+  }
+  if (pidePv) {
+    if (!e.cita_fecha || !e.cita_hora) throw new Error('SIGMA pide la fecha y hora de la primera visita: rellénala y vuelve a aprobar');
+    pv = `${e.cita_fecha} ${e.cita_hora.slice(0, 5)}`;
+    if (pv > ahora) throw new Error('La fecha de primera visita no puede ser posterior a ahora');
+    if (cc && cc > pv) throw new Error('La fecha de contacto con el cliente tiene que ser anterior a la primera visita');
+    const x = fechaSigma(e.cita_fecha, e.cita_hora);
+    Object.assign(f, { diapv: x.day, mespv: x.month, anopv: x.year, horapv_h: x.hour, horapv_m: x.minute });
+  }
+  const segs = (h: unknown, m: unknown) => (h ? 3600 * Number(h) + 60 * Number(m) : '');
+  Object.assign(f, { jsonClasi: JSON.stringify(ws), idServicio: n, horacc: segs(f.horacc_h, f.horacc_m), horapv: segs(f.horapv_h, f.horapv_m), continuar: TXT_TERMINAR });
+  let dataForm = '';
+  for (const c in f) if (c) dataForm += `${c}=${encodeURI(f[c] as string)}&`;
+  let user = '';
+  try { user = JSON.parse(atob(ut.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub ?? ''; } catch { /* sin usuario */ }
+  const res = await apiFnol(ut, 'confirm-fnol', { user, dataForm, videoExpertise: '0' }, true);
+  const ok = res?.success === true || res?.data?.success === true;
+  const comp = await apiFnol(ut, 'fnol-initial-data', { reparation: n }).catch(() => null);
+  if (String(comp?.data?.confirmed) === '1') {
+    const cubiertos = danos.filter((r) => !r.Rechazado && !(r.CodigosRechazo || []).length).length;
+    return `Siniestro confirmado en SIGMA desde KUBEL · ${ex.DescripcionCausa || 'causa del clasificador'} · ${cubiertos}/${danos.length} daño(s) cubiertos${pv ? ` · primera visita ${pv.slice(0, 10).split('-').reverse().join('/')} ${pv.slice(11)}` : ''}`;
+  }
+  console.error('confirm-fnol', n, JSON.stringify(res).slice(0, 1500));
+  if (ok) throw new Dudoso('SIGMA respondió que sí, pero el servicio sigue sin confirmar: míralo en el portal antes de reintentar');
+  throw new Error('Al confirmar: ' + textoFnol(res?.metadata?.errorCodes ?? res?.data?.metadata?.errorCodes));
 }
 
 // Informes nuevos de servicios SIGMA: si el servicio está sin confirmar, borrador 'confirmacion' para la oficina.
