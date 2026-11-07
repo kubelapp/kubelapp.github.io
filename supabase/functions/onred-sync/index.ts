@@ -7,7 +7,8 @@ import postgres from 'npm:postgres@3.4.4';
 import { DOMParser, Element } from 'https://deno.land/x/deno_dom@v0.1.45/deno-dom-wasm.ts';
 
 const BASE = 'https://www.funcionareparaciones.es/cronosp/';
-const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36';
+const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/157.0.0.0 Safari/537.36';
+const CH = { 'sec-ch-ua': '"Chromium";v="157", "Google Chrome";v="157", "Not.A/Brand";v="99"', 'sec-ch-ua-mobile': '?0', 'sec-ch-ua-platform': '"Windows"', 'Upgrade-Insecure-Requests': '1', 'Sec-Fetch-Site': 'same-origin', 'Sec-Fetch-Mode': 'navigate', 'Sec-Fetch-Dest': 'document', 'Sec-Fetch-User': '?1' };
 const LISTAS = [
   { prog: 'cita', lista: 'pendiente_cita' },
   { prog: 'atencion', lista: 'citado' },
@@ -37,7 +38,7 @@ class Sesion {
     let body: string | undefined = form ? new URLSearchParams(form).toString() : undefined;
     for (let i = 0; i < 8; i++) {
       const headers: Record<string, string> = {
-        'User-Agent': UA,
+        ...CH, 'User-Agent': UA,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'es-ES,es;q=0.9',
         Referer: this.ultima,
@@ -169,7 +170,7 @@ function leerFicha(html: string) {
 async function diagnostico(s: Sesion, usuario: string, clave: string, modo: string) {
   const pasos: unknown[] = [];
   const headersBase = () => ({
-    'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'es-ES,es;q=0.9',
+    ...CH, 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'es-ES,es;q=0.9',
     ...(s.cookies.size ? { Cookie: [...s.cookies].map(([k, v]) => `${k}=${v}`).join('; ') } : {}),
   });
   const guardar = (res: Response) => { for (const c of res.headers.getSetCookie()) { const kv = c.split(';')[0]; const i = kv.indexOf('='); if (i > 0) s.cookies.set(kv.slice(0, i).trim(), kv.slice(i + 1).trim()); } };
