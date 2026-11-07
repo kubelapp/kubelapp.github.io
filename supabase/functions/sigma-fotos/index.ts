@@ -523,6 +523,60 @@ Deno.serve(async (req) => {
       const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!, { auth: { persistSession: false } });
       return json(await importarFotos(admin));
     }
+    // v6.1 (07/11): diagnóstico de SOLO LECTURA de la Confirmación completa (confirval.php y clasificador de daños).
+    //   ?verclasi=N&cuenta=VLL → atributos del componente, scripts, fnol-initial-data en bruto, urlWs y urlClasi.
+    //   &asset=URL[&desde=0&largo=150000][&buscar=regex] → texto de un recurso de plataforma-smart / multiasistencia.
+    //   &api=ruta → POST de solo lectura al servicio JSON del componente con {reparation:N} (solo rutas *-initial-data,
+    //   *data-sorter* no: se limita a lecturas). Nunca llama a confirm-fnol ni a fasttrack-confirm.
+    const verclasi = url.searchParams.get('verclasi');
+    if (verclasi) {
+      const cuenta = url.searchParams.get('cuenta') || 'VLL';
+      const ses = new Sesiones();
+      const s2 = await ses.de(cuenta);
+      const API = 'https://mawmods.plataforma-smart.com/me';
+      const permitido = (u: string) => /^https:\/\/([a-z0-9-]+\.)*(plataforma-smart\.com|multiasistencia\.com)\//i.test(u);
+      const recorte = (t: string) => {
+        const desde = Number(url.searchParams.get('desde') || 0), largo = Math.min(Number(url.searchParams.get('largo') || 150000), 400000);
+        const buscar = url.searchParams.get('buscar');
+        if (buscar) {
+          const re = new RegExp(buscar, 'gi'); const ctx = Number(url.searchParams.get('ctx') || 600);
+          return { largo_total: t.length, coincidencias: [...t.matchAll(re)].slice(0, 40).map((m) => ({ pos: m.index, texto: t.slice(Math.max(0, m.index! - ctx), m.index! + ctx) })) };
+        }
+        return { largo_total: t.length, desde, texto: t.slice(desde, desde + largo) };
+      };
+      const asset = url.searchParams.get('asset');
+      if (asset) {
+        if (!permitido(asset)) return json({ error: 'dominio no permitido' }, 400);
+        const r = await fetch(asset, { headers: { 'User-Agent': UA, Referer: BASE + 'confirval.php' }, signal: AbortSignal.timeout(30000) });
+        return json({ asset, status: r.status, tipo: r.headers.get('content-type'), ...recorte(await r.text()) });
+      }
+      const html = await s2.pedir(`confirval.php?reparacion=${verclasi}&modo=0`);
+      const comp = (html.match(/<multiasistencia-fnol[^>]*>/i) || [])[0] || null;
+      const ut = (comp?.match(/\sut="([^"]+)"/i) || [])[1] || null;
+      const scripts = [...html.matchAll(/<script[^>]*src="([^"]+)"/gi)].map((m) => m[1]);
+      const cab = { 'Content-Type': 'application/json', Authorization: `Bearer ${ut}`, Version: '3.0.0', 'User-Agent': UA, Origin: 'https://web.multiasistencia.com', Referer: BASE + 'confirval.php' };
+      const api = url.searchParams.get('api');
+      if (api) {
+        if (!/^[a-z-]*(initial-data|translations[^/]*)$/i.test(api)) return json({ error: 'solo lecturas *-initial-data' }, 400);
+        const r = await fetch(`${API}/${api}`, { method: 'POST', headers: cab, body: JSON.stringify({ reparation: verclasi }), signal: AbortSignal.timeout(20000) });
+        return json({ api, status: r.status, ...recorte(await r.text()) });
+      }
+      const r = await fetch(`${API}/fnol-initial-data`, { method: 'POST', headers: cab, body: JSON.stringify({ reparation: verclasi }), signal: AbortSignal.timeout(20000) });
+      const ini = await r.text();
+      let d: Record<string, unknown> = {};
+      try { d = JSON.parse(ini)?.data || {}; } catch { /* bruto */ }
+      const leer = async (u: unknown) => {
+        if (typeof u !== 'string' || !permitido(u)) return { url: u ?? null, nota: 'sin URL o dominio no permitido' };
+        try {
+          const x = await fetch(u, { headers: { 'User-Agent': UA, Referer: BASE + 'confirval.php' }, signal: AbortSignal.timeout(20000) });
+          const t = await x.text();
+          return { url: u, status: x.status, tipo: x.headers.get('content-type'), scripts: [...t.matchAll(/<script[^>]*src="([^"]+)"/gi)].map((m) => m[1]), texto: t.slice(0, 20000) };
+        } catch (err) { return { url: u, error: (err as Error).message }; }
+      };
+      const sin = html.replace(/<script[\s\S]*?<\/script>/gi, ' ').replace(/<style[\s\S]*?<\/style>/gi, ' ').replace(/\s+/g, ' ');
+      return json({ servicio: verclasi, cuenta, componente: comp?.replace(/\sut="[^"]+"/i, ' ut="…"'), scripts, inicial_status: r.status,
+        inicial: ini.slice(0, 60000), urlWs: await leer(d.urlWs), urlClasi: await leer(d.urlClasi), pagina: sin.slice(0, 4000) });
+    }
     // Diagnóstico de solo lectura de la pestaña Documentos (solo GET)
     const verdocs = url.searchParams.get('verdocs');
     if (verdocs) {
