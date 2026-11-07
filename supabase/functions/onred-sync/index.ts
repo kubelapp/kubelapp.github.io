@@ -77,11 +77,24 @@ function camposFormulario(html: string) {
   return f;
 }
 
+
+// Cookies que pone el JavaScript de monitorización (Dynatrace) en el navegador al cargar el login.
+// Sin ellas, el portal falla justo después de validar usuario y clave (07/11/2026).
+function cookiesNavegador(s: Sesion) {
+  const ahora = Date.now();
+  const letras = Array.from({ length: 32 }, () => 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'[Math.floor(Math.random() * 26)]).join('');
+  if (!s.cookies.has('rxVisitor')) s.cookies.set('rxVisitor', `${ahora}${letras}V2`);
+  s.cookies.set('rxvt', `${ahora + 30 * 60_000}|${ahora}`);
+  s.cookies.set('dtSa', '-');
+  s.cookies.set('dtPC', `1$${String(ahora).slice(-8)}_${Math.floor(Math.random() * 900 + 100)}h-v${letras}-0e0`);
+}
+
 const pideLogin = (html: string) => /Login1\$UserName/.test(html);
 const captcha = (html: string) => /BotDetect|CaptchaCode|LBD_/i.test(html) && /captcha/i.test(html.replace(/BotDetectCaptcha\.ashx\?get=layout-stylesheet/g, ''));
 
 async function entrar(s: Sesion, usuario: string, clave: string) {
   const { html } = await s.pedir('Login.aspx');
+  cookiesNavegador(s);
   const f = camposFormulario(html);
   f['__EVENTTARGET'] = '';
   f['__EVENTARGUMENT'] = '';
@@ -182,6 +195,7 @@ async function diagnostico(s: Sesion, usuario: string, clave: string, modo: stri
   guardar(r1);
   const h1 = await r1.text();
   pasos.push({ paso: 'GET Login', status: r1.status, cookies: [...s.cookies.keys()], scriptManager: /ScriptManager1/.test(h1), campos: Object.keys(camposFormulario(h1)), captcha: /CaptchaCode|LBD_CaptchaDiv/i.test(h1) });
+  if (modo !== 'sindt') cookiesNavegador(s);
   const f = camposFormulario(h1);
   f['__EVENTTARGET'] = ''; f['__EVENTARGUMENT'] = ''; f['__LASTFOCUS'] = f['__LASTFOCUS'] ?? '';
   // El navegador rellena la posición de la página con «0» antes de enviar; vacía, ASP.NET puede fallar al leerla
