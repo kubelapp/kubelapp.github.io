@@ -548,7 +548,7 @@ Deno.serve(async (req) => {
       if (asset) {
         if (!permitido(asset)) return json({ error: 'dominio no permitido' }, 400);
         const r = await fetch(asset, { headers: { 'User-Agent': UA, Referer: BASE + 'confirval.php' }, signal: AbortSignal.timeout(30000) });
-        return json({ asset, status: r.status, tipo: r.headers.get('content-type'), ...recorte(await r.text()) });
+        return json({ asset, status: r.status, cabeceras: Object.fromEntries(r.headers), ...recorte(await r.text()) });
       }
       // Con el Referer de fotservicio.php el portal deja el pase (ut) vacío: se pide como lo hace sigma-sync
       const rc = await fetch(BASE + `confirval.php?reparacion=${verclasi}&modo=0`, { headers: { 'User-Agent': UA, Referer: BASE, Cookie: [...s2.cookies].map(([k, v]) => `${k}=${v}`).join('; ') }, signal: AbortSignal.timeout(25000) });
