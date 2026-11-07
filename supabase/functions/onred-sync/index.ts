@@ -169,6 +169,9 @@ function leerFicha(html: string) {
 // Diagnóstico del login: UN solo intento, devuelve qué responde el portal en cada paso (sin la clave).
 async function diagnostico(s: Sesion, usuario: string, clave: string, modo: string) {
   const pasos: unknown[] = [];
+  const forma = (v: string) => ({ largo: v.length, espaciosFuera: v !== v.trim(), espaciosDentro: /\s/.test(v.trim()), soloCifras: /^\d+$/.test(v.trim()) });
+  pasos.push({ paso: 'secretos', usuario: forma(usuario), clave: { largo: clave.length, espaciosFuera: clave !== clave.trim() } });
+  usuario = usuario.trim(); clave = clave.trim();
   const headersBase = () => ({
     ...CH, 'User-Agent': UA, Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8', 'Accept-Language': 'es-ES,es;q=0.9',
     ...(s.cookies.size ? { Cookie: [...s.cookies].map(([k, v]) => `${k}=${v}`).join('; ') } : {}),
@@ -216,12 +219,13 @@ Deno.serve(async (req) => {
   const s = await leerSecreto();
   if (!s || req.headers.get('x-kubel-secreto') !== s) return new Response('no', { status: 401 });
   const inicio = Date.now();
-  const usuario = Deno.env.get('ONRED_USUARIO');
-  const clave = Deno.env.get('ONRED_CLAVE');
+  const usuarioBruto = Deno.env.get('ONRED_USUARIO');
+  const claveBruta = Deno.env.get('ONRED_CLAVE');
+  const usuario = usuarioBruto?.trim(), clave = claveBruta?.trim();
   const json = (o: unknown) => new Response(JSON.stringify(o), { headers: { 'Content-Type': 'application/json' } });
   if (!usuario || !clave) return json({ ok: false, error: 'Faltan ONRED_USUARIO / ONRED_CLAVE en los secretos' });
   const ses = new Sesion();
-  if (new URL(req.url).searchParams.get('diag') === '1') return json(await diagnostico(ses, usuario, clave, new URL(req.url).searchParams.get('modo') || 'normal'));
+  if (new URL(req.url).searchParams.get('diag') === '1') return json(await diagnostico(ses, usuarioBruto!, claveBruta!, new URL(req.url).searchParams.get('modo') || 'normal'));
   try {
     const prof = await entrar(ses, usuario, clave);
     const filas: Fila[] = [];
