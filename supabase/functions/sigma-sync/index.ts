@@ -1651,6 +1651,17 @@ Deno.serve(async (req) => {
     for (const n of numeros) lista.push({ servicio: n, ...((await estadoRepaso(ut, n)) ?? { est: null }) });
     return new Response(JSON.stringify({ cuenta: c.id, lista }), { headers: { 'Content-Type': 'application/json' } });
   }
+  const verPagina = url.searchParams.get('verpagina');
+  if (verPagina && /^[a-zA-Z0-9_]+\.php(\?[\w=&%.-]*)?$/.test(verPagina)) { // solo lectura (GET): texto y enlaces de una página del portal
+    const c = CUENTAS.find((x) => x.id === (solo || 'VLL'))!;
+    const ses = new Sesion();
+    await entrar(ses, Deno.env.get(`SIGMA_${c.id}_USUARIO`)!, Deno.env.get(`SIGMA_${c.id}_CLAVE`)!);
+    const html = await ses.pedir(verPagina);
+    if (url.searchParams.get('html') === '1') return new Response(html.slice(0, 200000), { headers: { 'Content-Type': 'text/plain; charset=utf-8' } });
+    const doc = parse(html);
+    const enlaces = ([...doc.querySelectorAll('a')] as Element[]).map((a) => `${txt(a)} -> ${a.getAttribute('href') ?? ''}`).filter((x) => x.length > 4);
+    return new Response(JSON.stringify({ pagina: verPagina, texto: txt(doc.body as unknown as Element).slice(0, 8000), enlaces }), { headers: { 'Content-Type': 'application/json' } });
+  }
   const verRepaso = url.searchParams.get('verrepaso');
   if (verRepaso) { // solo lectura: datos iniciales del Repaso (review-initial-data) tal cual
     const c = CUENTAS.find((x) => x.id === (solo || 'VLL'))!;
