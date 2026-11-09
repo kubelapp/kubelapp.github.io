@@ -382,7 +382,8 @@ async function leerConfirmacion(s: Sesion, n: string): Promise<Record<string, un
       pide_contacto: String(sd.clientContact) === '1', pide_primera_visita: String(sd.firstVisit) === '1',
       tercero: sd.thirdPartyData ?? null, tipos_tercero: sd.injuredList ?? d.injuredList ?? [],
       localizacion: String(sd.isPositiveConfirmationOk) === '1' && String(sd.seeLocation) !== '1',
-      videoperitacion: String(sd.visualizationData?.videoExpertise?.display) === '1',
+      videoperitacion: String(sd.visualizationData?.videoExpertise?.display) === '1'
+        ? { lista: sd.videoExpertiseData?.videoExpertiseList ?? [], enlace: sd.videoExpertiseData?.link ?? null } : false,
       con_tercero: ['2', '3', '4', '5'].includes(String((sd.confirmationData || d.confirmationData || {}).typeInvolved)) || Number(sd.confirmFnol ?? d.confirmFnol) === 1,
     } : { error: codigosFnol(so).join(' · ') || 'fnol-data-sorter no respondió' } };
 }

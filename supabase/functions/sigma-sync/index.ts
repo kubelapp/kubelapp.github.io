@@ -29,6 +29,7 @@
 // v31 (05/11/2026): la descripción cortada por la lista (sin «...», 29109162) se sustituye por la completa de la ficha; ?verficha=N&cuenta=VLL = lectura de la ficha.
 // v30 (05/11/2026): mensaje a tramitación sin motivo válido → «Consulta/comentario…» (motivo 1), el predeterminado (decisión del usuario).
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
+// v33 (09/11/2026): Confirmación completa con videoperitación (perito y motivo los elige la oficina en Pasos SIGMA).
 // v32 (07/11/2026): Confirmación COMPLETA desde KUBEL (confirmarCompleta, SQL 36): si el envío trae confir_datos.kubel, manda confirm-fnol.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
 // ?cuenta=VLL → solo esa cuenta.  ?enviar=1 → solo manda a SIGMA los envíos aprobados (sin leer el listado).
@@ -996,7 +997,6 @@ async function confirmarCompleta(ut: string, n: string, e: Envio): Promise<strin
   if (!so?.success || !so.data) throw new Error(`fnol-data-sorter: ${textoFnol(so?.metadata?.errorCodes)}`);
   const sd = so.data;
   const vis = sd.visualizationData || {};
-  if (String(vis.videoExpertise?.display) === '1') throw new Error('SIGMA pide datos de videoperitación: de momento esta confirmación hay que terminarla en el portal');
   // buildForm (el orden de los campos es el del portal)
   const ini0 = (k: string) => (String(vis[k]?.display) !== '1' && sd.swRadio ? '' : vis[k]?.content);
   const f: Record<string, unknown> = {
@@ -1042,13 +1042,23 @@ async function confirmarCompleta(ut: string, n: string, e: Envio): Promise<strin
     const x = fechaSigma(e.cita_fecha, e.cita_hora);
     Object.assign(f, { diapv: x.day, mespv: x.month, anopv: x.year, horapv_h: x.hour, horapv_m: x.minute });
   }
+  // v33: videoperitación (configVideoExpertise del componente): si SIGMA la muestra, «perito» deja de estar fijado por el
+  // clasificador y, con perito = Sí, hay que elegir el motivo de videoperitación (campo videoExpertise, va el último).
+  const conVideo = String(vis.videoExpertise?.display) === '1';
+  if (conVideo) {
+    if (k.perito === '0' || k.perito === '1') f.perito = k.perito;
+    f.videoExpertise = f.perito === '1' ? String(k.videoExpertise || '') : '';
+    if (f.perito === '1' && !f.videoExpertise) throw new Error('Con perito = Sí, SIGMA pide el motivo de videoperitación: elígelo en Pasos SIGMA y vuelve a aprobar');
+  }
   const segs = (h: unknown, m: unknown) => (h ? 3600 * Number(h) + 60 * Number(m) : '');
   Object.assign(f, { jsonClasi: JSON.stringify(ws), idServicio: n, horacc: segs(f.horacc_h, f.horacc_m), horapv: segs(f.horapv_h, f.horapv_m), continuar: TXT_TERMINAR });
   let dataForm = '';
   for (const c in f) if (c) dataForm += `${c}=${encodeURI(f[c] as string)}&`;
   let user = '';
   try { user = JSON.parse(atob(ut.split('.')[1].replace(/-/g, '+').replace(/_/g, '/'))).sub ?? ''; } catch { /* sin usuario */ }
-  const res = await apiFnol(ut, 'confirm-fnol', { user, dataForm, videoExpertise: '0' }, true);
+  const cuerpoFnol: Record<string, unknown> = { user, dataForm, videoExpertise: '0' };
+  if (conVideo) Object.assign(cuerpoFnol, { videoExpertise: '1', expertise: f.perito, videoExpertiseReasonSelected: f.videoExpertise });
+  const res = await apiFnol(ut, 'confirm-fnol', cuerpoFnol, true);
   const ok = res?.success === true || res?.data?.success === true;
   const comp = await apiFnol(ut, 'fnol-initial-data', { reparation: n }).catch(() => null);
   if (String(comp?.data?.confirmed) === '1') {
