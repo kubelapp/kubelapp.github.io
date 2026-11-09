@@ -29,7 +29,8 @@
 // v31 (05/11/2026): la descripción cortada por la lista (sin «...», 29109162) se sustituye por la completa de la ficha; ?verficha=N&cuenta=VLL = lectura de la ficha.
 // v30 (05/11/2026): mensaje a tramitación sin motivo válido → «Consulta/comentario…» (motivo 1), el predeterminado (decisión del usuario).
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
-// v34 (09/11/2026): Repaso rechazado con 5091 «fecha laborable» → se repite sin control de agenda (fecha/hora intactas). ?verrepaso=N&cuenta= = review-initial-data tal cual.
+// v34 (09/11/2026): días no laborables de la agenda SIGMA (5091 «fecha laborable» y huecos que faltan) → sigma_dias_no_laborables (SQL 38):
+//   KUBEL no deja planificar visitas SIGMA esos días. ?verrepaso=N / ?verpagina=x.php (&cuenta=) = diagnósticos de solo lectura.
 // v33 (09/11/2026): Confirmación completa con videoperitación (perito y motivo los elige la oficina en Pasos SIGMA).
 // v32 (07/11/2026): Confirmación COMPLETA desde KUBEL (confirmarCompleta, SQL 36): si el envío trae confir_datos.kubel, manda confirm-fnol.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
@@ -645,6 +646,34 @@ async function enviarRepaso(s: Sesion, e: Envio): Promise<string> {
   }
 }
 
+// Días laborables / no laborables de la agenda SIGMA vistos durante un Repaso (v34). Los guarda procesarEnvios por cuenta.
+// La lista de huecos (dateGapSelectList, «dd/mm/aaaa - hh:mm») trae todos los días laborables de las próximas ~2 semanas:
+// un lunes–viernes que falta entre el primer y el último día de la lista no es laborable (p. ej. el 11/11/2026 en VLL).
+const diasSigma = { si: new Set<string>(), no: new Set<string>() };
+function apuntarHuecos(lista: { label?: string }[] | undefined) {
+  const dias = new Set<string>();
+  for (const h of lista || []) {
+    const m = String(h?.label || '').match(/(\d{2})\/(\d{2})\/(\d{4})/);
+    if (m) dias.add(`${m[3]}-${m[2]}-${m[1]}`);
+  }
+  if (dias.size < 3) return;
+  const orden = [...dias].sort();
+  for (const d of orden) diasSigma.si.add(d);
+  const fin = Date.parse(orden[orden.length - 1] + 'T12:00:00Z');
+  for (let t = Date.parse(orden[0] + 'T12:00:00Z'); t <= fin; t += 86400000) {
+    const f = new Date(t), d = f.toISOString().slice(0, 10), sem = f.getUTCDay();
+    if (sem >= 1 && sem <= 5 && !dias.has(d)) diasSigma.no.add(d);
+  }
+}
+async function guardarDiasSigma(admin: SupabaseClient, cuenta: string) {
+  const no = [...diasSigma.no].filter((d) => !diasSigma.si.has(d)), si = [...diasSigma.si];
+  diasSigma.no.clear(); diasSigma.si.clear();
+  try {
+    if (si.length) await admin.from('sigma_dias_no_laborables').delete().eq('cuenta', cuenta).in('fecha', si);
+    if (no.length) await admin.from('sigma_dias_no_laborables').upsert(no.map((fecha) => ({ cuenta, fecha, visto_en: new Date().toISOString() })), { onConflict: 'cuenta,fecha' });
+  } catch (err) { console.error('días no laborables', cuenta, err); }
+}
+
 // Segunda parte del Repaso (ya abierto en el portal): valida el envío y lo guarda con review-update
 // deno-lint-ignore no-explicit-any
 async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (ruta: string, cuerpo: unknown) => Promise<any>): Promise<string> {
@@ -701,7 +730,7 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
     const marca = `(${dia}/${mes}/${a}${e.hora ? ' - ' + e.hora.slice(0, 5) : ''}`;
     return f.bitacora.some((b) => b.fecha && b.fecha >= inicio && b.texto.startsWith(nombreMotivo) && b.texto.includes(marca));
   };
-  let sms = false, mantenida = false, dudas = 0, laborable = 0;
+  let sms = false, mantenida = false, dudas = 0;
   let enviar: Record<string, unknown> = cmd;
   for (let paso = 0; paso < 8; paso++) {
     let res;
@@ -717,12 +746,13 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
       catch { throw new Error(`Portal SIGMA saturado (${err.message}) y no se pudo comprobar si se guardó: mira la ficha en el portal antes de reintentar`); }
       if (guardado) return resumen(' (comprobado en la ficha tras un fallo del portal)');
       if (dudas > 1) throw new Error(`Portal SIGMA saturado dos veces (${err.message}). Comprobado: no se guardó nada; reintenta en un rato`);
-      sms = false; mantenida = false; laborable = 0; enviar = cmd; // no se guardó: se repite desde el principio una vez
+      sms = false; mantenida = false; enviar = cmd; // no se guardó: se repite desde el principio una vez
       continue;
     }
     const code = res?.metadata?.errorCodes?.[0]?.code;
     if (code === 'APLAZAMOK') {
-      return resumen(`${laborable ? ' (SIGMA pedía «fecha laborable»: guardado sin control de agenda)' : ''}${mantenida ? ' (fecha/hora mantenida aunque la agenda no tenía hueco)' : ''}${sms ? ' (SMS al cliente confirmado)' : ''}${dudas ? ' (reintentado tras un fallo del portal)' : ''}`);
+      diasSigma.si.add(e.fecha!);
+      return resumen(`${mantenida ? ' (fecha/hora mantenida aunque la agenda no tenía hueco)' : ''}${sms ? ' (SMS al cliente confirmado)' : ''}${dudas ? ' (reintentado tras un fallo del portal)' : ''}`);
     }
     if (code === 'AVISO_SMS') { // aviso genérico de SMS al cliente: siempre "Sí"
       if (enviar.smsResponse) throw new Error('El portal repitió el aviso de SMS tras contestar "Sí"');
@@ -732,6 +762,7 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
     }
     if (res?.success && !code && res.data?.dates) { // pantalla de huecos de agenda
       const nd = res.data;
+      apuntarHuecos(nd.dates?.dateGapSelectList);
       if (nd.requestMultiGap) throw new Error('El portal pide confirmar una cita de varios huecos (multihueco): hazlo a mano en el portal');
       if (mantenida) throw new Error('El portal volvió a pedir hueco de agenda tras elegir "mantener la fecha/hora"');
       if (!nd.allowMaintainAppointmentGap) throw new Error('No hay hueco en la agenda para esa fecha/hora y el portal no deja mantenerla: elige otro hueco en el portal');
@@ -745,22 +776,12 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
       continue;
     }
     console.error('review-update', n, JSON.stringify(res?.metadata ?? res).slice(0, 1500));
-    // v34 (09/11/2026): 5091 «Debe introducir fecha laborable» (11/11/2026 en VLL, 29511179 y 29273266, sin ser festivo).
-    // El control lo hace la agenda de SIGMA: se repite sin control de disponibilidad/duración y, si sigue, con la
-    // fórmula de «a) mantener la fecha / hora introducida». La fecha/hora de la oficina NUNCA se cambia.
+    // v34 (09/11/2026): 5091 «Debe introducir fecha laborable» = el día no es laborable en la agenda de SIGMA para esta cuenta
+    // (11/11/2026 en VLL: ni «mantener la fecha/hora» lo admite, probado a mano). Se apunta el día en sigma_dias_no_laborables
+    // para que KUBEL no deje planificar visitas SIGMA ese día (SQL 38). La fecha/hora de la oficina nunca se cambia.
     if ((res?.metadata?.errorCodes || []).some((x: { code?: unknown }) => String(x?.code) === '5091')) {
-      if (laborable === 0) {
-        laborable = 1;
-        enviar = { ...enviar, controlAvailability: 0, controlDuration: 0 };
-        continue;
-      }
-      if (laborable === 1 && hourRaw) {
-        laborable = 2;
-        enviar = { ...enviar, controlAvailability: 0, controlDuration: 0, hourRadioButton: hourRaw,
-          dates: { ...(enviar.dates as Record<string, unknown>), actionDate: { day: String(Number(dia)), month: String(Number(mes)), year: a, hourRaw, date: `${dia}/${mes}/${a}` } } };
-        continue;
-      }
-      throw new Error(`SIGMA no admite el ${dia}/${mes}/${a} como día laborable para esta cuenta (agenda del profesional en el portal: vacaciones o día sin servicio). Cambia la visita de día en Planificación (el Repaso se reenvía solo) o quita ese día en la agenda de SIGMA y pulsa Reintentar. (código 5091 de SIGMA)`);
+      diasSigma.no.add(e.fecha!);
+      throw new Error(`SIGMA no admite el ${dia}/${mes}/${a} como día laborable en esta cuenta: cambia la visita a otro día en Planificación (el Repaso se reenvía solo). KUBEL ya no dejará planificar ese día. (código 5091 de SIGMA)`);
     }
     if ((res?.metadata?.errorCodes || []).some((x: { code?: unknown }) => String(x?.code) === '1212')) throw new SinConfirmar(SIN_CONFIRMAR);
     const bloqueo = bloqueoEstadoRepaso(res?.metadata?.errorCodes);
@@ -1240,6 +1261,7 @@ async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: str
   const fallidos = new Set<string>();
   let enviados = 0; const errores: string[] = [];
   for (let e = await siguiente(true); e; e = await siguiente(false)) {
+    if (diasSigma.si.size || diasSigma.no.size) await guardarDiasSigma(admin, cuenta);
     try {
       if (fallidos.has(e.parte_id) && e.tipo !== 'tramitacion') throw new Error('No se envió porque falló el envío anterior de este servicio');
       if (e.tipo === 'repaso' && e.parte.estado === 'cerrado') throw new Error(CODIGOS_REPASO['3057']);
@@ -1276,6 +1298,7 @@ async function procesarEnvios(admin: SupabaseClient, cuenta: string, nombre: str
       errores.push(`${e.parte.numero_servicio}: ${msg}`);
     }
   }
+  if (diasSigma.si.size || diasSigma.no.size) await guardarDiasSigma(admin, cuenta);
   if (errores.length) {
     try {
       await fetch(`${Deno.env.get('SUPABASE_URL')}/functions/v1/notificar`, {
