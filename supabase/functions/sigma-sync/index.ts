@@ -29,6 +29,7 @@
 // v31 (05/11/2026): la descripción cortada por la lista (sin «...», 29109162) se sustituye por la completa de la ficha; ?verficha=N&cuenta=VLL = lectura de la ficha.
 // v30 (05/11/2026): mensaje a tramitación sin motivo válido → «Consulta/comentario…» (motivo 1), el predeterminado (decisión del usuario).
 // ?vercontacto=N1,N2&cuenta=VLL → solo lectura: si el Repaso de esos servicios exige la fecha de contacto.
+// v34 (09/11/2026): Repaso rechazado con 5091 «fecha laborable» → se repite sin control de agenda (fecha/hora intactas). ?verrepaso=N&cuenta= = review-initial-data tal cual.
 // v33 (09/11/2026): Confirmación completa con videoperitación (perito y motivo los elige la oficina en Pasos SIGMA).
 // v32 (07/11/2026): Confirmación COMPLETA desde KUBEL (confirmarCompleta, SQL 36): si el envío trae confir_datos.kubel, manda confirm-fnol.
 // ?verconfir=N&cuenta=VLL → solo lectura: estado de la Confirmación de ese servicio.
@@ -700,7 +701,7 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
     const marca = `(${dia}/${mes}/${a}${e.hora ? ' - ' + e.hora.slice(0, 5) : ''}`;
     return f.bitacora.some((b) => b.fecha && b.fecha >= inicio && b.texto.startsWith(nombreMotivo) && b.texto.includes(marca));
   };
-  let sms = false, mantenida = false, dudas = 0;
+  let sms = false, mantenida = false, dudas = 0, laborable = 0;
   let enviar: Record<string, unknown> = cmd;
   for (let paso = 0; paso < 8; paso++) {
     let res;
@@ -716,12 +717,12 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
       catch { throw new Error(`Portal SIGMA saturado (${err.message}) y no se pudo comprobar si se guardó: mira la ficha en el portal antes de reintentar`); }
       if (guardado) return resumen(' (comprobado en la ficha tras un fallo del portal)');
       if (dudas > 1) throw new Error(`Portal SIGMA saturado dos veces (${err.message}). Comprobado: no se guardó nada; reintenta en un rato`);
-      sms = false; mantenida = false; enviar = cmd; // no se guardó: se repite desde el principio una vez
+      sms = false; mantenida = false; laborable = 0; enviar = cmd; // no se guardó: se repite desde el principio una vez
       continue;
     }
     const code = res?.metadata?.errorCodes?.[0]?.code;
     if (code === 'APLAZAMOK') {
-      return resumen(`${mantenida ? ' (fecha/hora mantenida aunque la agenda no tenía hueco)' : ''}${sms ? ' (SMS al cliente confirmado)' : ''}${dudas ? ' (reintentado tras un fallo del portal)' : ''}`);
+      return resumen(`${laborable ? ' (SIGMA pedía «fecha laborable»: guardado sin control de agenda)' : ''}${mantenida ? ' (fecha/hora mantenida aunque la agenda no tenía hueco)' : ''}${sms ? ' (SMS al cliente confirmado)' : ''}${dudas ? ' (reintentado tras un fallo del portal)' : ''}`);
     }
     if (code === 'AVISO_SMS') { // aviso genérico de SMS al cliente: siempre "Sí"
       if (enviar.smsResponse) throw new Error('El portal repitió el aviso de SMS tras contestar "Sí"');
@@ -744,6 +745,23 @@ async function guardarRepaso(s: Sesion, e: Envio, n: string, ini: any, api: (rut
       continue;
     }
     console.error('review-update', n, JSON.stringify(res?.metadata ?? res).slice(0, 1500));
+    // v34 (09/11/2026): 5091 «Debe introducir fecha laborable» (11/11/2026 en VLL, 29511179 y 29273266, sin ser festivo).
+    // El control lo hace la agenda de SIGMA: se repite sin control de disponibilidad/duración y, si sigue, con la
+    // fórmula de «a) mantener la fecha / hora introducida». La fecha/hora de la oficina NUNCA se cambia.
+    if ((res?.metadata?.errorCodes || []).some((x: { code?: unknown }) => String(x?.code) === '5091')) {
+      if (laborable === 0) {
+        laborable = 1;
+        enviar = { ...enviar, controlAvailability: 0, controlDuration: 0 };
+        continue;
+      }
+      if (laborable === 1 && hourRaw) {
+        laborable = 2;
+        enviar = { ...enviar, controlAvailability: 0, controlDuration: 0, hourRadioButton: hourRaw,
+          dates: { ...(enviar.dates as Record<string, unknown>), actionDate: { day: String(Number(dia)), month: String(Number(mes)), year: a, hourRaw, date: `${dia}/${mes}/${a}` } } };
+        continue;
+      }
+      throw new Error(`SIGMA no admite el ${dia}/${mes}/${a} como día laborable para esta cuenta (agenda del profesional en el portal: vacaciones o día sin servicio). Cambia la visita de día en Planificación (el Repaso se reenvía solo) o quita ese día en la agenda de SIGMA y pulsa Reintentar. (código 5091 de SIGMA)`);
+    }
     if ((res?.metadata?.errorCodes || []).some((x: { code?: unknown }) => String(x?.code) === '1212')) throw new SinConfirmar(SIN_CONFIRMAR);
     const bloqueo = bloqueoEstadoRepaso(res?.metadata?.errorCodes);
     if (bloqueo) throw new BloqueadoPorEstado(bloqueo);
@@ -1632,6 +1650,17 @@ Deno.serve(async (req) => {
     const lista = [];
     for (const n of numeros) lista.push({ servicio: n, ...((await estadoRepaso(ut, n)) ?? { est: null }) });
     return new Response(JSON.stringify({ cuenta: c.id, lista }), { headers: { 'Content-Type': 'application/json' } });
+  }
+  const verRepaso = url.searchParams.get('verrepaso');
+  if (verRepaso) { // solo lectura: datos iniciales del Repaso (review-initial-data) tal cual
+    const c = CUENTAS.find((x) => x.id === (solo || 'VLL'))!;
+    const ses = new Sesion();
+    await entrar(ses, Deno.env.get(`SIGMA_${c.id}_USUARIO`)!, Deno.env.get(`SIGMA_${c.id}_CLAVE`)!);
+    const ut = await paseRepaso(ses, verRepaso);
+    if (!ut) return new Response(JSON.stringify({ error: 'sin pase de Repaso' }), { headers: { 'Content-Type': 'application/json' } });
+    const r = await fetch(`${API_REPASO}/review-initial-data`, { method: 'POST', body: JSON.stringify({ reparation: verRepaso }),
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${ut}`, Version: '3.0.0', 'User-Agent': UA, Origin: 'https://web.multiasistencia.com', Referer: BASE + 'fechaccion.php' } });
+    return new Response(await r.text(), { headers: { 'Content-Type': 'application/json' } });
   }
   const verFicha = url.searchParams.get('verficha');
   if (verFicha) { // solo lectura: lo que el robot lee de la ficha de un servicio
