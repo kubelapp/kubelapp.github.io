@@ -196,6 +196,24 @@
   #km-fechas{display:flex;gap:6px;align-items:center}
   #p-kilometraje .bloque .tabla-km{margin:0}
   @media (max-width:760px){ #km-fechas{flex:1 1 100%} .tabla-km td.ruta{min-width:200px} }
+  /* ---------- Gastos ---------- */
+  .g-form{display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end}
+  .g-form label{margin:0 0 3px}
+  .g-form input,.g-form select{padding:7px 9px}
+  .g-c.fecha{width:140px} .g-c.prov{flex:1 1 150px} .g-c.desc{flex:2 1 180px} .g-c.cat{width:190px}
+  .g-c.imp{width:105px} .g-c.imp input{text-align:right} .g-c.pct{width:80px} .g-c.fac{width:120px}
+  .g-c.adj button,.g-c.btn button{white-space:nowrap;padding:7px 12px}
+  .g-c input.calc{background:#F1EEE8;color:var(--suave)}
+  .tabla-fac tr.borr td{background:#FFF8EC}
+  .tabla-fac td.desc{white-space:normal;min-width:160px;max-width:260px}
+  .adj-l{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
+  .adj-l .chip{cursor:pointer}
+  .g-res td.num,.g-res th.num{text-align:right;font-variant-numeric:tabular-nums}
+  .g-res tr.tot td{font-weight:700;background:#FAFAF8}
+  .g-res td.mal{color:var(--peligro)}
+  .g-cats input{padding:4px 6px;font-size:13px} .g-cats input.n{width:80px;text-align:right}
+  .g-cats td{padding:4px 6px}
+  @media (max-width:760px){ .g-c.fecha,.g-c.cat,.g-c.fac{flex:1 1 45%;width:auto} .g-c.imp{flex:1 1 30%;width:auto} .g-c.pct{flex:1 1 20%;width:auto} .g-c.btn{flex:1 1 100%} .g-c.btn button{width:100%} }
 </style>
 </head>
 <body>
@@ -210,6 +228,7 @@
     <nav class="menu">
       <a href="#usuarios" data-p="usuarios">Usuarios</a>
       <a href="#facturacion" data-p="facturacion">Facturación</a>
+      <a href="#gastos" data-p="gastos">Gastos</a>
       <a href="#estadisticas" data-p="estadisticas">Estadísticas</a>
       <a href="#kilometraje" data-p="kilometraje">Kilometraje</a>
     </nav>
@@ -261,6 +280,44 @@
     <div id="fac-lista"><p class="suave">Cargando…</p></div>
     <div class="barra" style="margin-top:28px"><h2 style="font-size:17px">Facturas de compañía subidas</h2></div>
     <div id="fac-facturas" class="suave">—</div>
+  </main>
+
+  <main id="p-gastos" class="pagina ancha oculto">
+    <div class="barra">
+      <h2>Gastos</h2>
+      <span class="esp"></span>
+      <button class="sec" onclick="modalCategorias()">⚙ Categorías</button>
+      <button class="sec" onclick="generarFijos(this)" title="Crea en borrador los gastos fijos del mes elegido (alquiler, seguros, sueldos…) que aún no estén">📅 Generar fijos del mes</button>
+      <button class="sec" onclick="excelGastos()">⬇ Excel</button>
+    </div>
+    <section class="bloque" id="g-alta">
+      <h3>Añadir factura</h3>
+      <div class="g-form">
+        <div class="g-c fecha"><label>Fecha</label><input type="date" id="ga-fecha"></div>
+        <div class="g-c prov"><label>Proveedor</label><input id="ga-prov" list="ga-provs" autocomplete="off" onchange="proveedorElegido('ga')"><datalist id="ga-provs"></datalist></div>
+        <div class="g-c desc"><label>Descripción</label><input id="ga-desc" autocomplete="off"></div>
+        <div class="g-c cat"><label>Categoría</label><select id="ga-cat" onchange="categoriaElegida('ga')"></select></div>
+        <div class="g-c imp"><label>Sin IVA</label><input id="ga-base" inputmode="decimal" placeholder="0,00"></div>
+        <div class="g-c pct"><label>IVA</label><select id="ga-pct"></select></div>
+        <div class="g-c imp"><label>Con IVA</label><input id="ga-total" inputmode="decimal" placeholder="0,00"></div>
+        <div class="g-c fac"><label>Nº factura</label><input id="ga-fac" autocomplete="off"></div>
+        <div class="g-c adj"><label>Factura</label><button type="button" class="sec" id="ga-adj-btn" onclick="$('#ga-adj').click()">📷 Foto</button>
+          <input type="file" id="ga-adj" accept="image/*,application/pdf" multiple style="display:none" onchange="adjElegidos(this)"></div>
+        <div class="g-c btn"><label>&nbsp;</label><button id="ga-btn" onclick="altaGasto()">Añadir</button></div>
+      </div>
+      <p class="nota-est">Escribe el importe <b>sin IVA</b> o <b>con IVA</b>: el otro se calcula solo con el % elegido. <b>Intro</b> añade la factura y deja la fecha y la categoría para la siguiente.
+        Al escribir un proveedor que ya has usado se pone sola su categoría. En el móvil, «📷 Foto» abre la cámara.</p>
+    </section>
+    <div class="filtros">
+      <input id="gf-q" placeholder="Buscar proveedor, descripción, factura, servicio…" oninput="pintarGastos()">
+      <select id="gf-mes" onchange="pintarGastos()"></select>
+      <select id="gf-cat" onchange="pintarGastos()"></select>
+      <select id="gf-est" onchange="pintarGastos()"></select>
+      <button class="sec mini" onclick="['#gf-q','#gf-cat','#gf-est'].forEach((i)=>($(i).value=''));pintarGastos()">Quitar filtros</button>
+    </div>
+    <div id="g-kpis" class="kpis"></div>
+    <div id="g-lista"><p class="suave">Cargando…</p></div>
+    <section class="bloque" style="margin-top:18px"><h3 id="g-res-tit">Resumen del mes</h3><div id="g-resumen"></div></section>
   </main>
 
   <main id="p-estadisticas" class="pagina ancha oculto">
@@ -369,7 +426,7 @@ async function alCambiarSesion(s) {
   irA();
 }
 // ---------- Páginas (Usuarios · Facturación) ----------
-const PAGINAS = ['usuarios', 'facturacion', 'estadisticas', 'kilometraje'];
+const PAGINAS = ['usuarios', 'facturacion', 'gastos', 'estadisticas', 'kilometraje'];
 function irA() {
   const p = PAGINAS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'usuarios';
   PAGINAS.forEach((x) => $('#p-' + x).classList.toggle('oculto', x !== p));
@@ -377,6 +434,7 @@ function irA() {
   if (p === 'facturacion') cargarFac();
   if (p === 'estadisticas') cargarEst(true);
   if (p === 'kilometraje') cargarKm(true);
+  if (p === 'gastos') cargarGastos(true);
 }
 window.addEventListener('hashchange', () => { if (yoId) irA(); });
 async function llamar(cuerpo) {
@@ -1338,6 +1396,408 @@ async function excelKm() {
     ws['!cols'] = [11, 14, 8, 70, 12, 12, 10, 8, 11, 24].map((w) => ({ wch: w }));
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Kilometraje');
     XLSX.writeFile(wb, `KUBEL-kilometraje-${$('#km-mes').value || hoyISO()}.xlsx`);
+  } catch (e) { aviso('Error: ' + mensaje(e)); }
+}
+
+// =====================================================================
+//  GASTOS · 10/11/2026 (SQL 40)
+//  Sustituye a la hoja «Transacciones → Gastos» del Excel. Cada línea: base (sin IVA), % IVA, IVA y total;
+//  se escribe sin IVA o con IVA y el otro se calcula (ivaDesde). Facturas de papel: foto/PDF en el bucket `gastos`.
+//  Borradores: los crea la BD con las facturas del operario (informe con importe o foto de factura) y
+//  «Generar fijos del mes» (categorías marcadas fijo). Un borrador no cuenta en los totales hasta confirmarlo.
+// =====================================================================
+const IVAS = [21, 10, 4, 0];
+let gastos = [], gCats = [], gCargado = false, canalG = null, gAdj = [];
+const gBorr = (x) => x.estado === 'borrador';
+const pctTxt = (p) => Number(p).toLocaleString('es-ES') + ' %';
+const numTxt = (v) => v == null ? '' : String(v).replace('.', ',');
+// Calcula los otros importes a partir del que se escribió («base» = sin IVA, «total» = con IVA)
+function ivaDesde(desde, valor, pct) {
+  const p = Number(pct) / 100;
+  if (valor == null) return { base: null, iva: null, total: null };
+  if (desde === 'total') { const base = r2(valor / (1 + p)); return { base, iva: r2(valor - base), total: r2(valor) }; }
+  const iva = r2(valor * p); return { base: r2(valor), iva, total: r2(valor + iva) };
+}
+// Enlaza los campos <pre>-base, <pre>-pct y <pre>-total: el que se escribe manda; el otro se recalcula
+function enlazarIva(pre) {
+  const b = $(`#${pre}-base`), t = $(`#${pre}-total`), p = $(`#${pre}-pct`);
+  const calc = (desde) => {
+    const el = desde === 'total' ? t : b, otro = desde === 'total' ? b : t;
+    b.dataset.manda = desde;
+    const v = aNum(el.value);
+    const r = ivaDesde(desde, v, p.value);
+    otro.value = v == null ? '' : numTxt(desde === 'total' ? r.base : r.total);
+    el.classList.remove('calc'); otro.classList.toggle('calc', v != null);
+  };
+  b.oninput = () => calc('base'); t.oninput = () => calc('total');
+  p.onchange = () => calc(b.dataset.manda || 'base');
+}
+function leerImportes(pre) {
+  const desde = $(`#${pre}-base`).dataset.manda || 'base';
+  const txt = $(`#${pre}-${desde}`).value.trim();
+  const v = txt === '' ? null : aNum(txt);
+  if (txt !== '' && v == null) return { error: 'Importe no válido' };
+  return { ...ivaDesde(desde, v, $(`#${pre}-pct`).value), iva_pct: Number($(`#${pre}-pct`).value) };
+}
+const opcionesCat = (sel) => `<option value="">— Categoría —</option>` + gCats.filter((c) => c.activa || c.nombre === sel)
+  .map((c) => `<option ${c.nombre === sel ? 'selected' : ''}>${esc(c.nombre)}</option>`).join('');
+const opcionesPct = (sel) => [...new Set([...IVAS, Number(sel ?? 21)])].map((p) => `<option value="${p}" ${p === Number(sel ?? 21) ? 'selected' : ''}>${pctTxt(p)}</option>`).join('');
+
+async function cargarGastos(forzar) {
+  if (gCargado && !forzar) return pintarGastos();
+  const [a, b] = await Promise.all([
+    sb.from('gastos').select('*').order('fecha', { ascending: false }).order('creado_en', { ascending: false }).limit(10000),
+    sb.from('gasto_categorias').select('*').order('orden').order('nombre'),
+  ]);
+  if (a.error || b.error) { $('#g-lista').innerHTML = `<p class="error">No se pudo cargar: ${esc(mensaje(a.error || b.error))}</p>`; return; }
+  gastos = a.data; gCats = b.data; gCargado = true;
+  if (!$('#gf-mes').dataset.ini) {
+    $('#gf-mes').dataset.ini = 1; $('#gf-mes').innerHTML = `<option value="${hoyISO().slice(0, 7)}"></option>`; $('#gf-mes').value = hoyISO().slice(0, 7);
+    $('#ga-fecha').value = hoyISO(); $('#ga-cat').innerHTML = opcionesCat(''); $('#ga-pct').innerHTML = opcionesPct(21);
+    enlazarIva('ga');
+    $('#g-alta').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.matches('input')) { e.preventDefault(); altaGasto(); } });
+  } else { const c = $('#ga-cat').value; $('#ga-cat').innerHTML = opcionesCat(c); }
+  $('#ga-provs').innerHTML = [...new Set(gastos.map((g) => g.proveedor).filter(Boolean))].sort().map((p) => `<option value="${esc(p)}">`).join('');
+  if (!facCargada) cargarFac().then(() => pintarGastos());   // ingresos del resumen
+  pintarGastos();
+  if (!canalG) {
+    canalG = sb.channel('admin-gastos').on('postgres_changes', { event: '*', schema: 'public', table: 'gastos' }, (ev) => {
+      if (ev.eventType === 'DELETE') gastos = gastos.filter((x) => x.id !== ev.old.id);
+      else { const i = gastos.findIndex((x) => x.id === ev.new.id); if (i >= 0) gastos[i] = ev.new; else gastos.unshift(ev.new); }
+      if (!$('#p-gastos').classList.contains('oculto') && !document.activeElement?.closest?.('#g-lista')) pintarGastos();
+    }).subscribe();
+  }
+}
+
+// Proveedor ya usado → su última categoría y % IVA
+function proveedorElegido(pre) {
+  const v = $(`#${pre}-prov`).value.trim().toLowerCase(); if (!v) return;
+  const u = gastos.find((g) => (g.proveedor || '').toLowerCase() === v && g.categoria);
+  if (!u) return;
+  $(`#${pre}-cat`).value = u.categoria;
+  $(`#${pre}-pct`).value = String(Number(u.iva_pct)); $(`#${pre}-pct`).onchange();
+}
+function categoriaElegida(pre) {
+  const c = gCats.find((x) => x.nombre === $(`#${pre}-cat`).value); if (!c) return;
+  $(`#${pre}-pct`).innerHTML = opcionesPct(c.iva_def); $(`#${pre}-pct`).onchange();
+}
+
+// ---------- Archivos de la factura ----------
+async function aJPEG(file) {
+  if (!/^image\//.test(file.type) || file.type === 'image/gif') return file;
+  const img = await createImageBitmap(file).catch(() => null);
+  if (!img) return file;
+  const k = Math.min(1, 2000 / Math.max(img.width, img.height));
+  const c = document.createElement('canvas'); c.width = Math.round(img.width * k); c.height = Math.round(img.height * k);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return await new Promise((ok) => c.toBlob((b) => ok(b || file), 'image/jpeg', 0.82));
+}
+async function subirAdjuntos(files, fecha) {
+  const rutas = [];
+  for (const f of files) {
+    const pdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+    const datos = pdf ? f : await aJPEG(f);
+    const ruta = `${(fecha || hoyISO()).slice(0, 7)}/${crypto.randomUUID()}.${pdf ? 'pdf' : 'jpg'}`;
+    const { error } = await sb.storage.from('gastos').upload(ruta, datos, { contentType: pdf ? 'application/pdf' : 'image/jpeg' });
+    if (error) throw new Error('No se pudo subir la factura: ' + mensaje(error));
+    rutas.push('gastos:' + ruta);
+  }
+  return rutas;
+}
+function adjElegidos(inp) {
+  gAdj = [...inp.files]; inp.value = '';
+  $('#ga-adj-btn').textContent = gAdj.length ? `📎 ${gAdj.length}` : '📷 Foto';
+}
+async function verAdjunto(ref) {
+  const [bucket, ...r] = ref.split(':'); const ruta = r.join(':');
+  const w = window.open('', '_blank');
+  const { data, error } = await sb.storage.from(bucket).createSignedUrl(ruta, 600);
+  if (error) { w?.close(); return aviso('No se pudo abrir: ' + mensaje(error)); }
+  if (w) w.location = data.signedUrl; else location.href = data.signedUrl;
+}
+const chipsAdj = (x, quitar) => (x.adjuntos || []).map((a, i) => `<span class="chip gr" onclick="verAdjunto('${esc(a)}')" title="Ver">${/\.pdf$/i.test(a) ? '📄' : '🖼'} ${a.startsWith('fotos:') ? 'operario' : 'factura'} ${i + 1}${quitar ? ` <b onclick="event.stopPropagation();quitarAdj('${x.id}',${i})" title="Quitar">✕</b>` : ''}</span>`).join('');
+
+// ---------- Alta rápida ----------
+async function altaGasto() {
+  const btn = $('#ga-btn'); if (btn.disabled) return;
+  const imp = leerImportes('ga');
+  if (imp.error) return aviso(imp.error);
+  const d = {
+    fecha: $('#ga-fecha').value || hoyISO(), proveedor: $('#ga-prov').value.trim().toUpperCase() || null,
+    descripcion: $('#ga-desc').value.trim() || null, categoria: $('#ga-cat').value || null,
+    factura: $('#ga-fac').value.trim() || null, base: imp.base, iva: imp.iva, total: imp.total, iva_pct: imp.iva_pct,
+    origen: 'manual', estado: 'ok',
+  };
+  if (d.total == null) return aviso('Falta el importe');
+  if (!d.categoria) return aviso('Elige la categoría');
+  if (!d.proveedor && !d.descripcion) return aviso('Escribe el proveedor o la descripción');
+  btn.disabled = true; btn.textContent = 'Guardando…';
+  try {
+    d.adjuntos = gAdj.length ? await subirAdjuntos(gAdj, d.fecha) : [];
+    const { data, error } = await sb.from('gastos').insert(d).select().single();
+    if (error) throw error;
+    if (!gastos.some((g) => g.id === data.id)) gastos.unshift(data);
+    ['#ga-prov', '#ga-desc', '#ga-base', '#ga-total', '#ga-fac'].forEach((i) => { $(i).value = ''; $(i).classList.remove('calc'); });
+    delete $('#ga-base').dataset.manda;
+    gAdj = []; $('#ga-adj-btn').textContent = '📷 Foto';
+    if (!$('#ga-provs').querySelector(`option[value="${CSS.escape(d.proveedor || '')}"]`) && d.proveedor) $('#ga-provs').insertAdjacentHTML('beforeend', `<option value="${esc(d.proveedor)}">`);
+    pintarGastos(); aviso(`Añadida: ${eur(d.total)}`); $('#ga-prov').focus();
+  } catch (e) { aviso('No se guardó: ' + mensaje(e)); }
+  btn.disabled = false; btn.textContent = 'Añadir';
+}
+
+// ---------- Lista ----------
+function filtroGastos(salvo) {
+  const mes = $('#gf-mes').value, cat = $('#gf-cat').value, est = $('#gf-est').value, q = $('#gf-q').value.trim().toLowerCase();
+  return (x) => {
+    if (salvo !== 'mes' && mes && x.fecha.slice(0, 7) !== mes) return false;
+    if (salvo !== 'cat' && cat && (x.categoria || '—') !== cat) return false;
+    if (salvo !== 'est' && est && (est === 'borrador') !== gBorr(x)) return false;
+    if (q && ![x.proveedor, x.descripcion, x.factura, x.servicio, x.operario, x.categoria, x.comentario].some((t) => String(t || '').toLowerCase().includes(q))) return false;
+    return true;
+  };
+}
+function pintarGastos() {
+  if (!gCargado) return;
+  const hoy = hoyISO().slice(0, 7);
+  const meses = contar(gastos.filter(filtroGastos('mes')), (x) => x.fecha.slice(0, 7));
+  if (!meses.has(hoy)) meses.set(hoy, 0);
+  rellenarSelect('#gf-mes', 'Todos los meses', [...meses].sort((a, b) => b[0].localeCompare(a[0])).map(([k, n]) => [k, nombreMes(k), n]), $('#gf-mes').value);
+  const cats = contar(gastos.filter(filtroGastos('cat')), (x) => x.categoria || '—');
+  rellenarSelect('#gf-cat', 'Todas las categorías', [...cats].sort((a, b) => a[0].localeCompare(b[0])).map(([k, n]) => [k, k, n]), $('#gf-cat').value);
+  const be = gastos.filter(filtroGastos('est'));
+  rellenarSelect('#gf-est', 'Confirmados y borradores', [['ok', 'Confirmados', be.filter((x) => !gBorr(x)).length], ['borrador', 'Borradores por revisar', be.filter(gBorr).length]], $('#gf-est').value);
+
+  const ver = gastos.filter(filtroGastos()).sort((a, b) => b.fecha.localeCompare(a.fecha) || b.creado_en.localeCompare(a.creado_en));
+  const ok = ver.filter((x) => !gBorr(x)), borr = ver.filter(gBorr);
+  const sum = (l, k) => r2(l.reduce((t, x) => t + (Number(x[k]) || 0), 0));
+  $('#g-kpis').innerHTML = `
+    <div class="kpi"><b>${eur(sum(ok, 'base'))}</b><span>Gastos sin IVA</span></div>
+    <div class="kpi"><b>${eur(sum(ok, 'iva'))}</b><span>IVA soportado</span></div>
+    <div class="kpi"><b>${eur(sum(ok, 'total'))}</b><span>Total con IVA</span></div>
+    <div class="kpi"><b>${ok.length}</b><span>Facturas</span><small>${ok.filter((x) => !(x.adjuntos || []).length).length} sin foto</small></div>
+    ${borr.length ? `<button class="kpi aviso kpi-enlace" onclick="$('#gf-est').value='borrador';pintarGastos()" title="Ver los borradores"><b>${borr.length}</b><span>Borradores por revisar</span><small>${eur(sum(borr, 'total'))} · no suman</small></button>` : ''}`;
+
+  if (!ver.length) $('#g-lista').innerHTML = '<p class="suave">Ningún gasto con estos filtros.</p>';
+  else {
+    const est = (x) => gBorr(x) ? `<button class="est no" onclick="confirmarGasto('${x.id}')" title="${x.origen === 'informe' ? 'Factura del operario: revisa importe y categoría' : 'Gasto fijo propuesto: revisa el importe'}">✓ Confirmar</button>` : '<span class="est si">OK</span>';
+    const orig = (x) => x.origen === 'informe' ? `<span class="chip av" title="Del informe del operario">operario</span> ` : x.origen === 'fijo' ? '<span class="chip gr">fijo</span> ' : '';
+    const serv = (x) => [x.servicio, x.operario].filter(Boolean).map(esc).join(' · ');
+    const inpImp = (x, k) => `<input class="imp" value="${numTxt(x[k])}" placeholder="0,00" onchange="guardarImporte('${x.id}','${k}',this)" onkeydown="if(event.key==='Enter')this.blur()">`;
+    $('#g-lista').innerHTML = `<div class="tabla-fac"><table><thead><tr>
+      <th>Fecha</th><th>Proveedor</th><th>Descripción</th><th>Categoría</th><th>Servicio</th><th class="num">Sin IVA</th><th class="num">IVA</th><th class="num">Con IVA</th><th>Nº factura</th><th>Archivo</th><th>Estado</th><th></th></tr></thead><tbody>
+      ${ver.slice(0, 800).map((x) => `<tr class="${gBorr(x) ? 'borr' : ''}">
+        <td>${fechaCorta(x.fecha)}</td><td><b>${esc(x.proveedor || '')}</b></td><td class="desc">${orig(x)}${esc(x.descripcion || '')}</td>
+        <td>${esc(x.categoria || '—')}</td><td class="suave">${serv(x)}</td>
+        <td class="num">${inpImp(x, 'base')}</td><td class="num">${pctTxt(x.iva_pct)}<br><span class="cierre">${eur(x.iva)}</span></td><td class="num">${inpImp(x, 'total')}</td>
+        <td>${esc(x.factura || '')}</td><td><div class="adj-l" style="margin:0">${chipsAdj(x)}</div></td>
+        <td>${est(x)}</td><td><button class="mini sec" onclick="modalGasto('${x.id}')">⋯</button></td></tr>`).join('')}
+      </tbody></table></div>
+      <div class="tarjetas-fac">${ver.slice(0, 300).map((x) => `<div class="tjf ${gBorr(x) ? 'sin-imp' : ''}">
+        <div class="f1"><b>${esc(x.proveedor || x.descripcion || '—')}</b>${est(x)}</div>
+        <div class="c">${fechaCorta(x.fecha)} · ${esc(x.categoria || '—')}${x.proveedor && x.descripcion ? ' · ' + esc(x.descripcion) : ''}${serv(x) ? '<br>' + serv(x) : ''}</div>
+        <div class="f2"><b>${eur(x.total)}</b><span class="suave">sin IVA ${eur(x.base)}</span><span class="adj-l" style="margin:0">${chipsAdj(x)}</span>
+          <button class="mini sec" onclick="modalGasto('${x.id}')">Editar</button></div></div>`).join('')}</div>
+      <div class="pie-tabla">Escribe encima del importe sin IVA o con IVA para corregirlo: el otro se recalcula con su %. ${ver.length > 800 ? 'Se muestran 800: usa los filtros. ' : ''}Los borradores no suman hasta pulsar «✓ Confirmar».</div>`;
+  }
+  pintarResumenGastos();
+}
+
+async function guardarImporte(id, k, el) {
+  const x = gastos.find((g) => g.id === id); if (!x) return;
+  const txt = el.value.trim(), v = txt === '' ? null : aNum(txt);
+  if (txt !== '' && v == null) { aviso('Importe no válido'); el.value = numTxt(x[k]); return; }
+  const r = ivaDesde(k, v, x.iva_pct);
+  const { data, error } = await sb.from('gastos').update({ base: r.base, iva: r.iva, total: r.total, editado_en: new Date().toISOString() }).eq('id', id).select().single();
+  if (error) return aviso('No se guardó: ' + mensaje(error));
+  Object.assign(x, data); aviso('Guardado'); el.blur(); pintarGastos();
+}
+async function confirmarGasto(id) {
+  const x = gastos.find((g) => g.id === id); if (!x) return;
+  if (x.total == null) { aviso('Pon el importe antes de confirmar'); return modalGasto(id); }
+  if (!x.categoria) { aviso('Elige la categoría antes de confirmar'); return modalGasto(id); }
+  const { data, error } = await sb.from('gastos').update({ estado: 'ok', editado_en: new Date().toISOString() }).eq('id', id).select().single();
+  if (error) return aviso('No se guardó: ' + mensaje(error));
+  Object.assign(x, data); pintarGastos(); aviso('Confirmado');
+}
+
+// ---------- Ficha de un gasto ----------
+function modalGasto(id) {
+  const x = gastos.find((g) => g.id === id); if (!x) return;
+  const origen = { informe: `Factura del operario${x.operario ? ' ' + esc(x.operario) : ''}${x.servicio ? ' · servicio ' + esc(x.servicio) : ''}`, fijo: 'Gasto fijo del mes', excel: 'Del Excel de octubre', manual: 'Añadido a mano' }[x.origen] || '';
+  abrirModal(`
+    <h3>${gBorr(x) ? 'Borrador · ' : ''}${esc(x.proveedor || x.descripcion || 'Gasto')}</h3>
+    <div class="sub">${origen} · creado ${fecha(x.creado_en)}${x.editado_en ? ' · editado ' + fecha(x.editado_en) : ''}</div>
+    <div class="dos"><div><label>Fecha</label><input type="date" id="gm-fecha" value="${esc(x.fecha)}"></div>
+      <div><label>Proveedor</label><input id="gm-prov" list="ga-provs" value="${esc(x.proveedor || '')}" onchange="proveedorElegido('gm')"></div></div>
+    <label>Descripción</label><input id="gm-desc" value="${esc(x.descripcion || '')}">
+    <div class="dos"><div><label>Categoría</label><select id="gm-cat" onchange="categoriaElegida('gm')">${opcionesCat(x.categoria)}</select></div>
+      <div><label>Nº factura</label><input id="gm-fac" value="${esc(x.factura || '')}"></div></div>
+    <div class="dos" style="grid-template-columns:1fr 90px 1fr"><div><label>Sin IVA</label><input id="gm-base" inputmode="decimal" value="${numTxt(x.base)}"></div>
+      <div><label>IVA</label><select id="gm-pct">${opcionesPct(x.iva_pct)}</select></div>
+      <div><label>Con IVA</label><input id="gm-total" inputmode="decimal" value="${numTxt(x.total)}"></div></div>
+    <div class="dos"><div><label>Servicio</label><input id="gm-serv" value="${esc(x.servicio || '')}"></div>
+      <div><label>Operario</label><input id="gm-op" value="${esc(x.operario || '')}"></div></div>
+    <label>Comentario</label><input id="gm-com" value="${esc(x.comentario || '')}">
+    <label>Factura (foto o PDF)</label>
+    <div class="adj-l">${chipsAdj(x, true) || '<span class="suave">Sin archivo</span>'}
+      <button class="mini sec" onclick="$('#gm-adj').click()">📷 Añadir</button><input type="file" id="gm-adj" accept="image/*,application/pdf" multiple style="display:none" onchange="anadirAdj('${x.id}',this)"></div>
+    <div class="check"><input type="checkbox" id="gm-ok" ${gBorr(x) ? '' : 'checked'}><span>Confirmado (cuenta en los totales)</span></div>
+    <div id="m-error" class="error"></div>
+    <div class="acciones"><button class="sec" style="border-color:var(--peligro);color:var(--peligro);margin-right:auto" onclick="borrarGasto('${x.id}')">Borrar</button>
+      <button id="gm-btn" onclick="guardarGasto('${x.id}')">Guardar</button></div>`);
+  enlazarIva('gm');
+  // En las facturas del operario manda el importe con IVA (es lo que escribe él)
+  $('#gm-base').dataset.manda = x.origen === 'informe' ? 'total' : 'base';
+}
+async function guardarGasto(id) {
+  const x = gastos.find((g) => g.id === id); if (!x) return;
+  const imp = leerImportes('gm');
+  if (imp.error) return ($('#m-error').textContent = imp.error);
+  const d = {
+    fecha: $('#gm-fecha').value || x.fecha, proveedor: $('#gm-prov').value.trim().toUpperCase() || null, descripcion: $('#gm-desc').value.trim() || null,
+    categoria: $('#gm-cat').value || null, factura: $('#gm-fac').value.trim() || null, servicio: $('#gm-serv').value.trim() || null,
+    operario: $('#gm-op').value.trim().toUpperCase() || null, comentario: $('#gm-com').value.trim() || null,
+    base: imp.base, iva: imp.iva, total: imp.total, iva_pct: imp.iva_pct, estado: $('#gm-ok').checked ? 'ok' : 'borrador', editado_en: new Date().toISOString(),
+  };
+  if (d.estado === 'ok' && (d.total == null || !d.categoria)) return ($('#m-error').textContent = 'Para confirmarlo hace falta importe y categoría.');
+  $('#gm-btn').disabled = true;
+  const { data, error } = await sb.from('gastos').update(d).eq('id', id).select().single();
+  if (error) { $('#gm-btn').disabled = false; return ($('#m-error').textContent = mensaje(error)); }
+  Object.assign(x, data); cerrarModal(); pintarGastos(); aviso('Guardado');
+}
+async function anadirAdj(id, inp) {
+  const x = gastos.find((g) => g.id === id); const files = [...inp.files]; inp.value = '';
+  if (!x || !files.length) return;
+  try {
+    const rutas = await subirAdjuntos(files, x.fecha);
+    const { data, error } = await sb.from('gastos').update({ adjuntos: [...(x.adjuntos || []), ...rutas] }).eq('id', id).select().single();
+    if (error) throw error;
+    Object.assign(x, data); aviso('Factura añadida'); modalGasto(id); pintarGastos();
+  } catch (e) { aviso(mensaje(e)); }
+}
+async function quitarAdj(id, i) {
+  const x = gastos.find((g) => g.id === id); if (!x) return;
+  const ref = x.adjuntos[i];
+  if (!confirm(ref.startsWith('fotos:') ? '¿Quitar esta foto del gasto? (la foto sigue en el informe del operario)' : '¿Quitar y borrar este archivo?')) return;
+  const { data, error } = await sb.from('gastos').update({ adjuntos: x.adjuntos.filter((_, k) => k !== i) }).eq('id', id).select().single();
+  if (error) return aviso('No se pudo: ' + mensaje(error));
+  if (ref.startsWith('gastos:')) await sb.storage.from('gastos').remove([ref.slice(7)]);
+  Object.assign(x, data); modalGasto(id); pintarGastos();
+}
+async function borrarGasto(id) {
+  const x = gastos.find((g) => g.id === id); if (!x) return;
+  if (!confirm('¿Borrar este gasto' + ((x.adjuntos || []).some((a) => a.startsWith('gastos:')) ? ' y su factura' : '') + '?')) return;
+  const { error } = await sb.from('gastos').delete().eq('id', id);
+  if (error) return aviso('No se borró: ' + mensaje(error));
+  const propios = (x.adjuntos || []).filter((a) => a.startsWith('gastos:')).map((a) => a.slice(7));
+  if (propios.length) await sb.storage.from('gastos').remove(propios);
+  gastos = gastos.filter((g) => g.id !== id); cerrarModal(); pintarGastos();
+}
+
+// ---------- Fijos del mes ----------
+async function generarFijos(btn) {
+  const mes = $('#gf-mes').value || hoyISO().slice(0, 7);
+  if (!confirm(`¿Crear en borrador los gastos fijos de ${nombreMes(mes)} que aún no estén?`)) return;
+  btn.disabled = true;
+  const { data, error } = await sb.rpc('generar_gastos_fijos', { p_mes: mes + '-01' });
+  btn.disabled = false;
+  if (error) return aviso('No se pudo: ' + mensaje(error));
+  await cargarGastos(true);
+  $('#gf-mes').value = mes; $('#gf-est').value = data ? 'borrador' : ''; pintarGastos();
+  aviso(data ? `${data} gasto${data === 1 ? '' : 's'} fijo${data === 1 ? '' : 's'} en borrador: revisa los importes y confirma` : 'Ya estaban todos los fijos de ese mes');
+}
+
+// ---------- Resumen del mes (como la hoja «Resumen» del Excel) ----------
+function pintarResumenGastos() {
+  const mes = $('#gf-mes').value;
+  $('#g-res-tit').textContent = mes ? 'Resumen de ' + nombreMes(mes) : 'Resumen de todos los meses';
+  const ok = gastos.filter((x) => !gBorr(x) && (!mes || x.fecha.slice(0, 7) === mes));
+  const porCat = new Map();
+  ok.forEach((x) => { const k = x.categoria || '—'; const r = porCat.get(k) || { base: 0, iva: 0, total: 0, n: 0 }; r.base += +x.base || 0; r.iva += +x.iva || 0; r.total += +x.total || 0; r.n++; porCat.set(k, r); });
+  gCats.filter((c) => c.previsto != null && !porCat.has(c.nombre)).forEach((c) => porCat.set(c.nombre, { base: 0, iva: 0, total: 0, n: 0 }));
+  const orden = (k) => gCats.find((c) => c.nombre === k)?.orden ?? 999;
+  const prev = (k) => mes ? gCats.find((c) => c.nombre === k)?.previsto : null;
+  const filasCat = [...porCat].sort((a, b) => orden(a[0]) - orden(b[0]) || a[0].localeCompare(b[0]));
+  const tG = { base: 0, iva: 0, total: 0 }; filasCat.forEach(([, r]) => { tG.base += r.base; tG.iva += r.iva; tG.total += r.total; });
+  const tPrev = filasCat.reduce((t, [k]) => t + (Number(prev(k)) || 0), 0);
+  // Ingresos: Facturación del mes (por fecha de la línea), sin las «sin trabajo aparente»
+  const fac = facCargada ? filas.filter((x) => !sinTrabajo(x) && x.importe != null && (!mes || claveMes(x) === mes)) : [];
+  const ing = r2(fac.reduce((t, x) => t + Number(x.importe), 0)), ingLiq = r2(fac.filter((x) => x.liquidado).reduce((t, x) => t + Number(x.importe), 0));
+  const res = r2(ing - tG.base);
+  $('#g-resumen').innerHTML = `
+    <div class="kpis">
+      <div class="kpi"><b>${facCargada ? eur(ing) : '…'}</b><span>Ingresos sin IVA</span><small>Facturación del mes · ${eur(ingLiq)} liquidado</small></div>
+      <div class="kpi"><b>${eur(r2(tG.base))}</b><span>Gastos sin IVA</span><small>${ok.length} factura${ok.length === 1 ? '' : 's'} confirmada${ok.length === 1 ? '' : 's'}</small></div>
+      <div class="kpi ${res < 0 ? 'aviso' : ''}"><b>${facCargada ? eur(res) : '…'}</b><span>Resultado sin IVA</span><small>ingresos − gastos</small></div>
+      <div class="kpi"><b>${facCargada ? eur(r2(ing * (IVA - 1) - tG.iva)) : '…'}</b><span>IVA a pagar (aprox.)</span><small>repercutido ${eur(r2(ing * (IVA - 1)))} − soportado ${eur(r2(tG.iva))}</small></div>
+    </div>
+    ${filasCat.length ? `<div class="tabla-km g-res"><table><thead><tr><th>Categoría</th><th class="num">Facturas</th>${mes ? '<th class="num">Previsto</th>' : ''}<th class="num">Sin IVA</th><th class="num">IVA</th><th class="num">Con IVA</th>${mes ? '<th class="num">Diferencia</th>' : ''}</tr></thead><tbody>
+      ${filasCat.map(([k, r]) => { const p = prev(k); const dif = p != null ? r2(p - r.base) : null;
+        return `<tr><td>${esc(k)}</td><td class="num">${r.n}</td>${mes ? `<td class="num">${p != null ? eur(p) : ''}</td>` : ''}<td class="num">${eur(r2(r.base))}</td><td class="num">${eur(r2(r.iva))}</td><td class="num"><b>${eur(r2(r.total))}</b></td>${mes ? `<td class="num ${dif != null && dif < 0 ? 'mal' : ''}">${dif != null ? eur(dif) : ''}</td>` : ''}</tr>`; }).join('')}
+      <tr class="tot"><td>Total</td><td class="num">${ok.length}</td>${mes ? `<td class="num">${tPrev ? eur(r2(tPrev)) : ''}</td>` : ''}<td class="num">${eur(r2(tG.base))}</td><td class="num">${eur(r2(tG.iva))}</td><td class="num">${eur(r2(tG.total))}</td>${mes ? `<td class="num">${tPrev ? eur(r2(tPrev - tG.base)) : ''}</td>` : ''}</tr>
+    </tbody></table></div>` : '<p class="suave">Sin gastos confirmados en este periodo.</p>'}
+    <p class="nota-est">Ingresos = líneas de Facturación del mes con importe (sin IVA). Los contados de particulares se añaden en Facturación → «+ Añadir línea». El «Previsto» se pone en ⚙ Categorías. IVA a pagar: estimación con el 21 % de lo facturado; el dato oficial es el de la gestoría.</p>`;
+}
+
+// ---------- Categorías ----------
+function modalCategorias() {
+  const GR = { variable: 'Variable', fijo: 'Fijo', sueldo: 'Sueldo', impuestos: 'Impuestos' };
+  abrirModal(`<h3>Categorías de gasto</h3>
+    <div class="sub">«Fijo» = entra en «Generar fijos del mes» con su importe sin IVA. «Previsto» = presupuesto mensual (sin IVA) para el resumen. Los cambios se guardan al salir de cada casilla.</div>
+    <div class="tabla-km g-cats" style="margin-top:12px"><table><thead><tr><th>Nombre</th><th>Tipo</th><th>IVA</th><th>Fijo</th><th class="num">Importe fijo</th><th class="num">Previsto</th><th>Activa</th></tr></thead><tbody>
+    ${gCats.map((c) => `<tr data-k="${esc(c.nombre)}">
+      <td><input value="${esc(c.nombre)}" onchange="guardarCat(this,'nombre')" style="min-width:170px"></td>
+      <td><select onchange="guardarCat(this,'grupo')">${Object.entries(GR).map(([k, t]) => `<option value="${k}" ${k === c.grupo ? 'selected' : ''}>${t}</option>`).join('')}</select></td>
+      <td><select onchange="guardarCat(this,'iva_def')">${opcionesPct(c.iva_def)}</select></td>
+      <td><input type="checkbox" ${c.fijo ? 'checked' : ''} onchange="guardarCat(this,'fijo')" style="width:auto"></td>
+      <td class="num"><input class="n" value="${numTxt(c.fijo_importe)}" placeholder="—" onchange="guardarCat(this,'fijo_importe')"></td>
+      <td class="num"><input class="n" value="${numTxt(c.previsto)}" placeholder="—" onchange="guardarCat(this,'previsto')"></td>
+      <td><input type="checkbox" ${c.activa ? 'checked' : ''} onchange="guardarCat(this,'activa')" style="width:auto"></td></tr>`).join('')}
+    </tbody></table></div>
+    <div class="dos" style="margin-top:12px;grid-template-columns:1fr auto"><input id="gc-nueva" placeholder="Nueva categoría (p. ej. Sueldo Operario 1)"><button onclick="nuevaCat()">+ Añadir</button></div>`);
+  $('.modal').classList.add('grande');
+}
+async function guardarCat(el, campo) {
+  const nombre = el.closest('tr').dataset.k;
+  let v = el.type === 'checkbox' ? el.checked : el.value.trim();
+  if (campo === 'fijo_importe' || campo === 'previsto') { v = v === '' ? null : aNum(v); if (el.value.trim() !== '' && v == null) return aviso('Importe no válido'); }
+  if (campo === 'iva_def') v = Number(v);
+  if (campo === 'nombre' && !v) return aviso('El nombre no puede quedar vacío');
+  const { data, error } = await sb.from('gasto_categorias').update({ [campo]: v }).eq('nombre', nombre).select().single();
+  if (error) return aviso('No se guardó: ' + mensaje(error));
+  const c = gCats.find((x) => x.nombre === nombre); Object.assign(c, data);
+  if (campo === 'nombre') { el.closest('tr').dataset.k = data.nombre; gastos.forEach((g) => { if (g.categoria === nombre) g.categoria = data.nombre; }); }
+  $('#ga-cat').innerHTML = opcionesCat($('#ga-cat').value === nombre ? data.nombre : $('#ga-cat').value);
+  aviso('Guardado'); pintarGastos();
+}
+async function nuevaCat() {
+  const nombre = $('#gc-nueva').value.trim(); if (!nombre) return;
+  const sueldo = /^sueldo/i.test(nombre);
+  const { data, error } = await sb.from('gasto_categorias').insert({ nombre, grupo: sueldo ? 'sueldo' : 'variable', iva_def: sueldo ? 0 : 21, fijo: sueldo, orden: sueldo ? 230 : 500 }).select().single();
+  if (error) return aviso('No se pudo: ' + mensaje(error));
+  gCats.push(data); modalCategorias(); $('#ga-cat').innerHTML = opcionesCat($('#ga-cat').value);
+}
+
+// ---------- Excel ----------
+async function excelGastos() {
+  try {
+    if (!window.XLSX) await cargarScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+    const ver = gastos.filter(filtroGastos()).sort((a, b) => a.fecha.localeCompare(b.fecha));
+    const cab = ['FECHA', 'PROVEEDOR', 'DESCRIPCIÓN', 'CATEGORÍA', 'SERVICIO', 'OPERARIO', 'SIN IVA', '% IVA', 'IVA', 'CON IVA', 'Nº FACTURA', 'ARCHIVOS', 'ESTADO', 'COMENTARIO'];
+    const n = (v) => v == null ? '' : Number(v);
+    const datos = ver.map((x) => [new Date(x.fecha + 'T00:00:00'), x.proveedor || '', x.descripcion || '', x.categoria || '', x.servicio || '', x.operario || '',
+      n(x.base), Number(x.iva_pct), n(x.iva), n(x.total), x.factura || '', (x.adjuntos || []).length, gBorr(x) ? 'BORRADOR' : 'OK', x.comentario || '']);
+    const ok = ver.filter((x) => !gBorr(x)), s = (k) => r2(ok.reduce((t, x) => t + (Number(x[k]) || 0), 0));
+    datos.push(['', '', 'Total confirmados', '', '', '', s('base'), '', s('iva'), s('total'), '', '', '', '']);
+    const ws = XLSX.utils.aoa_to_sheet([cab, ...datos], { cellDates: true, dateNF: 'dd/mm/yyyy' });
+    ws['!cols'] = [10, 18, 30, 22, 11, 12, 11, 7, 10, 11, 14, 8, 10, 24].map((w) => ({ wch: w }));
+    const cats = new Map(); ok.forEach((x) => { const k = x.categoria || '—'; const r = cats.get(k) || [0, 0, 0, 0]; r[0]++; r[1] += +x.base || 0; r[2] += +x.iva || 0; r[3] += +x.total || 0; cats.set(k, r); });
+    const ws2 = XLSX.utils.aoa_to_sheet([['CATEGORÍA', 'FACTURAS', 'SIN IVA', 'IVA', 'CON IVA'], ...[...cats].sort((a, b) => a[0].localeCompare(b[0])).map(([k, r]) => [k, r[0], r2(r[1]), r2(r[2]), r2(r[3])]),
+      ['Total', ok.length, s('base'), s('iva'), s('total')]]);
+    ws2['!cols'] = [26, 10, 12, 12, 12].map((w) => ({ wch: w }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Gastos'); XLSX.utils.book_append_sheet(wb, ws2, 'Por categoría');
+    XLSX.writeFile(wb, `KUBEL-gastos-${$('#gf-mes').value || hoyISO()}.xlsx`);
   } catch (e) { aviso('Error: ' + mensaje(e)); }
 }
 </script>
