@@ -141,7 +141,7 @@ select v.f::date, v.prov, v.d, v.c, v.b, 21, round(v.b * 0.21, 2), v.b + round(v
 --  ACTIVADO (11/11/2026): borradores desde las facturas del operario
 --  (sin `drop`: create or replace trigger). Ejecutado tal cual.
 -- =====================================================================
-Borrador desde el informe del operario ----------
+-- Borrador desde el informe del operario
 -- Crea o actualiza (si sigue en borrador) el gasto de un informe con importe o foto de factura.
 create or replace function privado.gasto_de_informe(p_informe uuid)
 returns void language plpgsql security definer set search_path = public as $$
