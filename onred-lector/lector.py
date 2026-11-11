@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KUBEL — Lector de ONRED (v3, 11/11/2026). Vive en el servidor kubel-onred (Clouding.io, Barcelona).
+"""KUBEL — Lector de ONRED (v4, 11/11/2026). Vive en el servidor kubel-onred (Clouding.io, Barcelona).
 
 ONRED solo admite conexiones desde España, así que este programa entra en el portal, descarga las listas
 y las fichas de los servicios y se las manda a KUBEL (Edge Function onred-recibir), que es quien las lee y
@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = 'lector-3'  # v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
+VERSION = 'lector-4'  # v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
 BASE = os.environ.get('ONRED_BASE', 'https://www.funcionareparaciones.es/cronosp/')  # ONRED_BASE: solo pruebas
 KUBEL_URL_DEF = 'https://hytmotuhdxbzpustnlzx.supabase.co/functions/v1/onred-recibir'
 COOKIES = os.environ.get('ONRED_COOKIES', '/var/lib/kubel-onred/cookies.txt')
@@ -233,18 +233,21 @@ def main():
         actualizar(r.get('lector_commit'))
         print(f"Listas enviadas: {r.get('nuevos')} nuevo(s), {r.get('desaparecidos')} desaparecido(s); "
               f'{len(pedir)} ficha(s) pedidas')
-        tanda, enviadas = {}, 0
+        tanda, enviadas, renovada = {}, 0, False
         for n in pedir:
             if time.time() - inicio > TOPE:
                 print('Tope de tiempo: quedan fichas para la próxima pasada')
                 break
             try:
                 html = p.pedir(f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}')
-                if pide_login(html):
-                    # La sesión guardada vale para las listas pero no para las fichas: entrar y repetir
+                if pide_login(html) and not renovada:
+                    # La sesión guardada vale para las listas pero no para las fichas: entrar (una vez) y repetir
                     prof = entrar(p, usuario, clave)
+                    renovada = True
                     print('Sesión de ONRED renovada para las fichas')
                     html = p.pedir(f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}')
+                if pide_login(html):
+                    raise Fallo('ONRED no deja ver esta ficha (servicio terminado o de otro profesional)')
                 tanda[n] = ligero(html)
             except Fallo as e:
                 tanda[n] = {'error': str(e)}

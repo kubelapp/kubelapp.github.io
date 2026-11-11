@@ -148,6 +148,7 @@ Deno.serve(async (req) => {
                   left join public.onred_servicios s on s.numero = p.numero_servicio
                   where p.compania_id = 4 and p.estado not in ('cerrado', 'anulado') and p.numero_servicio ~ '^[0-9]{6,8}$'
                     and coalesce(s.lista, '') = '' and (s.ficha_en is null or s.ficha_en < now() - interval '6 hours')
+                    and s.ficha_error is null   -- ONRED no enseña la ficha de los ya terminados: no insistir
                   order by 2 nulls first limit 40`).map((x) => x.numero as string);
     const [l] = await tx`insert into public.onred_lecturas (ok, profesional, lector, listas, fichas, nuevos, desaparecidos, segundos)
              values (true, ${base.profesional}, ${base.lector}, ${tx.json(cuenta)}, 0, ${nuevos}, ${desaparecidos}, ${base.segundos})
