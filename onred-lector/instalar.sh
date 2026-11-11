@@ -3,6 +3,7 @@
 # Uso (una sola línea en el servidor):
 #   curl -fsSL https://raw.githubusercontent.com/kubelapp/kubelapp.github.io/<commit>/onred-lector/instalar.sh | bash -s <commit>
 # Se puede repetir sin miedo: actualiza el programa y conserva las claves (para cambiarlas: añadir «claves» al final).
+# Desde el lector v3 no hace falta repetirlo para actualizar: el lector se actualiza solo cuando KUBEL lo pide.
 set -euo pipefail
 COMMIT="${1:-main}"
 CAMBIAR_CLAVES="${2:-}"
@@ -19,6 +20,7 @@ chmod 700 /var/lib/kubel-onred
 curl -fsSL "$RAW/lector.py" -o "$DIR/lector.py.nuevo"
 python3 -m py_compile "$DIR/lector.py.nuevo"
 mv "$DIR/lector.py.nuevo" "$DIR/lector.py"
+[ "$COMMIT" != "main" ] && echo "$COMMIT" > "$DIR/commit"
 chmod 755 "$DIR/lector.py"
 echo "✓ Programa en $DIR/lector.py"
 

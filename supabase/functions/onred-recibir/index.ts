@@ -1,4 +1,5 @@
-// KUBEL — onred-recibir (v2, 11/11/2026). v2: vuelca en Servicios (privado.onred_volcar, SQL 42), pide también las
+// KUBEL — onred-recibir (v3, 11/11/2026). v3: guarda el error de una ficha aunque el servicio no esté aún en
+// onred_servicios y dice al lector qué versión debe tener (privado.ajustes 'onred_lector_commit'). v2: vuelca en Servicios (privado.onred_volcar, SQL 42), pide también las
 // fichas de los servicios OnRed abiertos que ya no salen en las listas (para cerrarlos) y avisa a la oficina.
 // v1: Recibe del «lector» del servidor kubel-onred (Clouding, Barcelona)
 // las páginas de ONRED que KUBEL no puede descargar (ONRED solo admite conexiones desde España),
@@ -125,7 +126,9 @@ Deno.serve(async (req) => {
                  values (${numero}, ${tx.json(f.ficha as Record<string, unknown>)}, now(), null)
                  on conflict (numero) do update set ficha = excluded.ficha, ficha_en = now(), ficha_error = null`;
       } else {
-        await tx`update public.onred_servicios set ficha_error = ${f.error ?? null} where numero = ${numero}`;
+        // También si aún no existe (p. ej. servicio dado de alta a mano que ONRED ya no enseña): así se ve el motivo
+        await tx`insert into public.onred_servicios (numero, ficha_error) values (${numero}, ${f.error ?? null})
+                 on conflict (numero) do update set ficha_error = excluded.ficha_error`;
       }
     }
     if (ronda === 2) {
@@ -149,7 +152,9 @@ Deno.serve(async (req) => {
     const [l] = await tx`insert into public.onred_lecturas (ok, profesional, lector, listas, fichas, nuevos, desaparecidos, segundos)
              values (true, ${base.profesional}, ${base.lector}, ${tx.json(cuenta)}, 0, ${nuevos}, ${desaparecidos}, ${base.segundos})
              returning id`;
-    return { lectura: l.id as number, nuevos, desaparecidos, pedir, tocados };
+    // Versión del lector que debe tener el servidor (commit del repo); el lector se actualiza solo si no coincide
+    const [vc] = await tx`select valor from privado.ajustes where clave = 'onred_lector_commit'`;
+    return { lectura: l.id as number, nuevos, desaparecidos, pedir, tocados, lector_commit: (vc?.valor as string) ?? null };
   });
 
   // 4) Volcar en Servicios y avisar a la oficina

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KUBEL — Lector de ONRED (v2, 11/11/2026). Vive en el servidor kubel-onred (Clouding.io, Barcelona).
+"""KUBEL — Lector de ONRED (v3, 11/11/2026). Vive en el servidor kubel-onred (Clouding.io, Barcelona).
 
 ONRED solo admite conexiones desde España, así que este programa entra en el portal, descarga las listas
 y las fichas de los servicios y se las manda a KUBEL (Edge Function onred-recibir), que es quien las lee y
@@ -20,7 +20,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = 'lector-2'  # v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
+VERSION = 'lector-3'  # v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
 BASE = os.environ.get('ONRED_BASE', 'https://www.funcionareparaciones.es/cronosp/')  # ONRED_BASE: solo pruebas
 KUBEL_URL_DEF = 'https://hytmotuhdxbzpustnlzx.supabase.co/functions/v1/onred-recibir'
 COOKIES = os.environ.get('ONRED_COOKIES', '/var/lib/kubel-onred/cookies.txt')
@@ -54,6 +54,36 @@ def config():
 
 
 CFG = {}
+
+
+COMMIT_F = '/opt/kubel-onred/commit'
+REPO_RAW = 'https://raw.githubusercontent.com/kubelapp/kubelapp.github.io/'
+
+
+def actualizar(commit):
+    """Descarga lector.py del repo de KUBEL en el commit indicado y sustituye a este (vale desde la próxima pasada)."""
+    if not commit or not re.fullmatch(r'[0-9a-f]{40}', commit):
+        return
+    try:
+        with open(COMMIT_F) as f:
+            if f.read().strip() == commit:
+                return
+    except FileNotFoundError:
+        pass
+    destino = os.path.abspath(__file__)
+    try:
+        with urllib.request.urlopen(REPO_RAW + commit + '/onred-lector/lector.py', timeout=60) as r:
+            codigo = r.read()
+        compile(codigo, 'lector.py', 'exec')  # que sea Python válido antes de cambiar nada
+        with open(destino + '.nuevo', 'wb') as f:
+            f.write(codigo)
+        os.chmod(destino + '.nuevo', 0o755)
+        os.replace(destino + '.nuevo', destino)
+        with open(COMMIT_F, 'w') as f:
+            f.write(commit)
+        print('Lector actualizado a', commit[:7], '(se usará en la próxima pasada)')
+    except Exception as e:  # noqa: BLE001 — si falla, sigue la versión actual
+        print('No se pudo actualizar el lector:', e)
 
 
 class Fallo(Exception):
@@ -200,6 +230,7 @@ def main():
             print('KUBEL no aceptó las listas:', r.get('error'))
             return 1
         pedir = r.get('pedir') or []
+        actualizar(r.get('lector_commit'))
         print(f"Listas enviadas: {r.get('nuevos')} nuevo(s), {r.get('desaparecidos')} desaparecido(s); "
               f'{len(pedir)} ficha(s) pedidas')
         tanda, enviadas = {}, 0
