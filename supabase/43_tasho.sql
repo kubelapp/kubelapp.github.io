@@ -106,3 +106,9 @@ end $$;
 revoke all on function privado.lanzar_tasho_cron() from public, anon, authenticated;
 select cron.unschedule('kubel-tasho-sync') where exists (select 1 from cron.job where jobname = 'kubel-tasho-sync');
 select cron.schedule('kubel-tasho-sync', '3,18,33,48 5-20 * * *', 'select privado.lanzar_tasho_cron()');
+
+-- 8) (11/11, oficina v2.67) Tiempo real del indicador «TASHO hace…» de la cabecera
+do $$ begin
+  if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and tablename = 'tasho_sincronizaciones') then
+    alter publication supabase_realtime add table public.tasho_sincronizaciones;
+  end if; end $$;
