@@ -1,6 +1,8 @@
-// KUBEL — onred-recibir (v1, 11/11/2026). Recibe del «lector» del servidor kubel-onred (Clouding, Barcelona)
+// KUBEL — onred-recibir (v2, 11/11/2026). v2: vuelca en Servicios (privado.onred_volcar, SQL 42), pide también las
+// fichas de los servicios OnRed abiertos que ya no salen en las listas (para cerrarlos) y avisa a la oficina.
+// v1: Recibe del «lector» del servidor kubel-onred (Clouding, Barcelona)
 // las páginas de ONRED que KUBEL no puede descargar (ONRED solo admite conexiones desde España),
-// las analiza y las guarda en onred_servicios / onred_lecturas (SQL 41). SOLO LECTURA: no toca partes.
+// las analiza y las guarda en onred_servicios / onred_lecturas (SQL 41). Nunca escribe en el portal.
 //
 // Toda la lectura de las páginas se hace AQUÍ; el lector solo descarga y reenvía.
 //  Ronda 1: POST { lector, ronda: 1, profesional, segundos, listas: { pendiente_cita, citado, en_curso } (html) }
@@ -31,6 +33,16 @@ async function autorizado(req: Request) {
   return !!(s && a.notif_secreto && s === a.notif_secreto);
 }
 
+async function avisar(nuevo: Record<string, unknown>) {
+  try {
+    const [a] = await sql`select valor from privado.ajustes where clave = 'notif_secreto'`;
+    await fetch(Deno.env.get('SUPABASE_URL') + '/functions/v1/notificar', {
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'x-kubel-secreto': a.valor },
+      body: JSON.stringify({ tabla: 'onred', evento: 'resumen', nuevo }), signal: AbortSignal.timeout(20000),
+    });
+  } catch (err) { console.error('avisar', (err as Error).message); }
+}
+
 type Cuerpo = {
   lector?: string; ronda?: number; lectura?: number; profesional?: string; segundos?: number; error?: string;
   listas?: Record<string, string>; fichas?: Record<string, string | { error: string }>;
@@ -46,8 +58,10 @@ Deno.serve(async (req) => {
 
   // El lector no pudo entrar o descargar: solo se apunta
   if (c.error) {
+    const [ant] = await sql`select ok from public.onred_lecturas order by id desc limit 1`;
     await sql`insert into public.onred_lecturas (ok, error, profesional, lector, segundos)
               values (false, ${c.error.slice(0, 1000)}, ${base.profesional}, ${base.lector}, ${base.segundos})`;
+    if (!ant || ant.ok) await avisar({ error: c.error.slice(0, 200) }); // solo la primera vez que falla
     return json({ ok: true, apuntado: 'error' });
   }
 
@@ -94,11 +108,13 @@ Deno.serve(async (req) => {
                  visto_en = now(), desaparecido_en = null`;
     }
     let desaparecidos = 0;
+    const tocados: string[] = [...filas.keys(), ...fichas.keys()];
     if (listasCompletas) {
       const fuera = [...antes].filter((n) => !filas.has(n));
       if (fuera.length) {
         await tx`update public.onred_servicios set lista = null, desaparecido_en = now() where numero in ${tx(fuera)}`;
         desaparecidos = fuera.length;
+        tocados.push(...fuera);
       }
     }
     let nFichas = 0;
@@ -116,17 +132,33 @@ Deno.serve(async (req) => {
       // Suma las fichas a la lectura de la ronda 1
       if (c.lectura) await tx`update public.onred_lecturas set fichas = coalesce(fichas, 0) + ${nFichas},
                                 segundos = coalesce(${base.segundos}, segundos) where id = ${c.lectura}`;
-      return { fichas: nFichas, pedir: [] as string[] };
+      return { fichas: nFichas, pedir: [] as string[], tocados };
     }
     // Fichas que quiere KUBEL: todas las de las listas y las de los que dejaron de salir hace < 3 días (cada 6 h)
-    const pedir = (await tx`select numero from public.onred_servicios
+    // y las de los servicios OnRed de KUBEL aún abiertos que no salen en las listas (alta a mano o desaparecidos),
+    // cada 6 h, para saber si ONRED los ha terminado, cerrado o anulado
+    const pedir = (await tx`select numero, ficha_en from public.onred_servicios
                   where lista is not null
                      or (desaparecido_en > now() - interval '3 days' and (ficha_en is null or ficha_en < now() - interval '6 hours'))
-                  order by ficha_en nulls first limit 40`).map((x) => x.numero as string);
+                  union
+                  select p.numero_servicio, s.ficha_en from public.partes p
+                  left join public.onred_servicios s on s.numero = p.numero_servicio
+                  where p.compania_id = 4 and p.estado not in ('cerrado', 'anulado') and p.numero_servicio ~ '^[0-9]{6,8}$'
+                    and coalesce(s.lista, '') = '' and (s.ficha_en is null or s.ficha_en < now() - interval '6 hours')
+                  order by 2 nulls first limit 40`).map((x) => x.numero as string);
     const [l] = await tx`insert into public.onred_lecturas (ok, profesional, lector, listas, fichas, nuevos, desaparecidos, segundos)
              values (true, ${base.profesional}, ${base.lector}, ${tx.json(cuenta)}, 0, ${nuevos}, ${desaparecidos}, ${base.segundos})
              returning id`;
-    return { lectura: l.id as number, nuevos, desaparecidos, pedir };
+    return { lectura: l.id as number, nuevos, desaparecidos, pedir, tocados };
   });
-  return json({ ok: true, ...r });
+
+  // 4) Volcar en Servicios y avisar a la oficina
+  const { tocados, ...resto } = r;
+  let volcado: { nuevos: unknown[]; cerrados: unknown[]; unidos: unknown[] } | null = null;
+  if (tocados.length) {
+    const [v] = await sql`select privado.onred_volcar(${sql.array(tocados)}::text[]) as v`;
+    volcado = v.v;
+    if (volcado && (volcado.nuevos.length || volcado.cerrados.length)) await avisar({ nuevos: volcado.nuevos, cerrados: volcado.cerrados });
+  }
+  return json({ ok: true, ...resto, volcado });
 });

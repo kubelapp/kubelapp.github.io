@@ -1,5 +1,5 @@
 // KUBEL — envía notificaciones push a los móviles.
-// La llama la base de datos (disparadores en asignaciones e informes) y el robot SIGMA, con una cabecera secreta.
+// La llama la base de datos (disparadores en asignaciones e informes), el robot SIGMA y onred-recibir, con una cabecera secreta.
 import { createClient } from 'npm:@supabase/supabase-js@2.45.4';
 import webpush from 'npm:web-push@3.6.7';
 import postgres from 'npm:postgres@3.4.4';
@@ -109,6 +109,31 @@ Deno.serve(async (req) => {
             texto: fuera.slice(0, 5).join(', ') + (fuera.length > 5 ? ' …' : ''), url: `${BASE}/oficina/#partes`, tag: 'sigma-fuera-' + momento,
           });
         }
+      }
+    } else if (tabla === 'onred' && evento === 'resumen') {
+      // Pasada del lector de ONRED (onred-recibir, SQL 42): servicios nuevos, cerrados por ONRED o fallo del lector
+      const a = await oficina();
+      const momento = Date.now();
+      if (nuevo.error) envios.push({ a, titulo: '⚠️ ONRED: el lector falla', texto: nuevo.error, url: `${BASE}/oficina/`, tag: 'onred-error' });
+      const nuevos: NuevoSigma[] = nuevo.nuevos || [];
+      if (nuevos.length === 1) {
+        const n = nuevos[0];
+        envios.push({ a, titulo: `📥 Nuevo servicio ONRED${n.urgente ? ' · URGENTE' : ''}`, texto: [n.numero, n.gremio, n.direccion].filter(Boolean).join(' · '), url: `${BASE}/oficina/#partes`, tag: 'onred-nuevo-' + n.numero });
+      } else if (nuevos.length > 1) {
+        const urg = nuevos.filter((n) => n.urgente).length;
+        envios.push({
+          a, titulo: `📥 ${nuevos.length} servicios nuevos ONRED${urg ? ` (${urg} urgente${urg > 1 ? 's' : ''})` : ''}`,
+          texto: nuevos.slice(0, 3).map((n) => `${n.numero} ${n.gremio}`).join(' · ') + (nuevos.length > 3 ? ' …' : ''),
+          url: `${BASE}/oficina/#partes`, tag: 'onred-nuevos-' + momento,
+        });
+      }
+      const cer: { numero: string; estado: string }[] = nuevo.cerrados || [];
+      if (cer.length) {
+        envios.push({
+          a, titulo: `ONRED: ${cer.length === 1 ? '1 servicio cerrado' : `${cer.length} servicios cerrados`}`,
+          texto: cer.slice(0, 5).map((c) => c.numero + (c.estado === 'anulado' ? ' (anulado)' : '')).join(', ') + (cer.length > 5 ? ' …' : ''),
+          url: `${BASE}/oficina/#partes`, tag: 'onred-cerrados-' + momento,
+        });
       }
     }
 
