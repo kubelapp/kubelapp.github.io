@@ -266,7 +266,7 @@
     <div class="barra">
       <h2>Facturación</h2>
       <span class="esp"></span>
-      <button class="sec" onclick="$('#f-factura').click()">📄 Subir factura SIGMA</button>
+      <button class="sec" onclick="$('#f-factura').click()">📄 Subir factura SIGMA / TASHO</button>
       <input type="file" id="f-factura" accept="application/pdf,.pdf" style="display:none" onchange="subirFactura(this)">
       <button class="sec" onclick="descargarExcel()">⬇ Excel</button>
       <button onclick="modalLinea()">+ Añadir línea</button>
@@ -864,6 +864,107 @@ function leerFacturaSigma(lineas) {
   f.descuentos = f.descuentos.filter((d) => { const k = d.importe + '|' + (/fianza/i.test(d.concepto) ? 'fianza' : d.concepto); if (vistos.has(k)) return false; vistos.add(k); return true; });
   return f;
 }
+// ---------- Liquidación de TASHO (PDF «LIQUIDACION OPERARIO»): lectura ----------
+// Una liquidación por periodo (FECHA INICIO – FECHA FINAL), sin nº de factura: se usa «TASHO-LIQ-aaaa-mm-dd» (fecha final).
+// Grupos por expediente: «… - Expediente: ID<Id Exp.> - <prefijo><nº de la compañía>» y partidas
+// «dd/mm/aaaa Exp:<Id Exp.>, <concepto>  0.00%  1.00  38,54 €  38,54 €». Pie: «EXPEDIENTES: n - BASE: x € - I.V.A.: 21,00% - IMPORTE TOTAL: y €».
+function esLiquidacionTasho(lineas) { return lineas.some((l) => /LIQUIDACION OPERARIO/i.test(l)) && lineas.some((l) => /Exp:\s*\d+,/.test(l)); }
+function leerLiquidacionTasho(lineas) {
+  const todo = lineas.join('\n');
+  const fecha = (et) => { const m = todo.match(new RegExp(et + ':?\\s*(\\d{2})\\/(\\d{2})\\/(\\d{4})', 'i')); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+  const desde = fecha('FECHA INICIO'), hasta = fecha('FECHA FINAL');
+  const f = {
+    compania: 'TASHO', numero: hasta ? 'TASHO-LIQ-' + hasta : null, fecha: hasta, desde,
+    base: aNum((todo.match(/BASE:\s*([\d.,]+)\s*€/i) || [])[1]),
+    total: aNum((todo.match(/IMPORTE TOTAL:\s*([\d.,]+)\s*€/i) || [])[1]),
+    expedientes: Number((todo.match(/EXPEDIENTES:\s*(\d+)/i) || [])[1]) || null,
+    a_transferir: null, lineas: [], descuentos: [],
+  };
+  f.a_transferir = f.total;
+  const porExp = new Map();
+  const grupo = (id) => { if (!porExp.has(id)) porExp.set(id, { idExp: id, servicio: null, expediente: null, importe: 0, partidas: 0, det: [], direccion: '', fechaUlt: null }); return porExp.get(id); };
+  let dirPend = '';
+  for (const bruta of lineas) {
+    const l = bruta.replace(/\s+/g, ' ').trim();
+    const cab = l.match(/Expediente:\s*ID(\d+)\s*-\s*([A-Z0-9]+)/i);
+    if (cab) {
+      const g = grupo(cab[1]); g.expediente = cab[2];
+      const dir = (dirPend + ' ' + l).match(/Direcci[oó]n:\s*(.*?)\s*Poblacion:\s*(.*?)\s*-\s*Expediente/i);
+      if (dir && !g.direccion) g.direccion = (dir[1] + ' ' + dir[2]).replace(/\s+/g, ' ').trim();
+      dirPend = ''; continue;
+    }
+    if (/^Direcci[oó]n:/i.test(l)) { dirPend = l; continue; }   // la cabecera a veces se parte en dos líneas
+    const p = l.match(/^(\d{2})\/(\d{2})\/(\d{4})\s+Exp:\s*(\d+),.*?(-?[\d.]*\d,\d{2})\s*€\s*$/);
+    if (p) {
+      const g = grupo(p[4]), fi = `${p[3]}-${p[2]}-${p[1]}`;
+      g.importe = r2(g.importe + aNum(p[5])); g.partidas++; g.det.push({ fecha: fi, importe: aNum(p[5]) });
+      if (!g.fechaUlt || fi > g.fechaUlt) g.fechaUlt = fi;
+    }
+  }
+  f.lineas = [...porExp.values()].map((g) => ({ ...g, servicio: g.expediente || g.idExp }));
+  return f;
+}
+// Cotejo de una liquidación TASHO: cada expediente de la liquidación contra TODAS sus líneas TASHO de Facturación
+// (por nº de expediente, Id Exp., alias de nº de parte / erratas y las partidas que el robot ya enlazó).
+async function cotejarTasho(f) {
+  // TASHO liquida PARTIDAS (las de cada mes), no servicios: un expediente puede repartirse entre varias liquidaciones.
+  // Cada partida del PDF se busca en «Trabajos realizados» que trae el robot (mismo Id Exp., fecha e importe) y así se sabe
+  // en qué línea de Facturación está. Una línea pasa a LIQUIDADO cuando ya no le queda ninguna partida posterior a esta liquidación.
+  const [tt, al] = await Promise.all([
+    sb.from('tasho_trabajos').select('id, id_exp, expediente, fecha, total, facturado, facturacion_id').limit(20000),
+    sb.from('tasho_alias').select('numero, id_exp').limit(5000),
+  ]);
+  const trab = tt.data || [], alias = al.data || [];
+  const tasho = filas.filter((x) => (x.compania || '').toUpperCase() === 'TASHO');
+  const usadas = new Set(), usadasT = new Set();
+  const res = { f, cuadran: [], distintos: [], yaLiq: [], nuevos: [], pendientes: [] };
+  const limpio = (s) => (s || '').replace(/\s+/g, '');
+  const hasta = f.fecha || hoyISO();
+  for (const l of f.lineas) {
+    const ts = trab.filter((t) => t.id_exp === l.idExp);
+    const exp = ts.find((t) => t.expediente)?.expediente || null;
+    if (exp) l.servicio = exp;
+    else if (l.expediente) { const c = [l.expediente, l.expediente.slice(2), l.expediente.slice(3)]; l.servicio = c.find((n) => tasho.some((x) => limpio(x.servicio) === n)) || l.expediente.replace(/^(AXA|PRY|PLY|GE|PY|SG|OR)(?=[A-Z0-9])/, ''); }
+    // partidas del PDF ↔ partidas leídas por el robot
+    let casadas = 0; const lineasPartida = new Map();   // facturacion_id → importe de esta liquidación
+    for (const d of l.det) {
+      const t = ts.find((t) => !usadasT.has(t.id) && t.fecha === d.fecha && Math.abs(Number(t.total) - d.importe) < 0.01)
+             || ts.find((t) => !usadasT.has(t.id) && Math.abs(Number(t.total) - d.importe) < 0.01);
+      if (!t) continue;
+      usadasT.add(t.id); casadas++;
+      if (t.facturacion_id) lineasPartida.set(t.facturacion_id, r2((lineasPartida.get(t.facturacion_id) || 0) + d.importe));
+    }
+    const nums = new Set([l.idExp, l.servicio, l.expediente, ...alias.filter((a) => a.id_exp === l.idExp).map((a) => a.numero)].filter(Boolean));
+    let G = tasho.filter((x) => lineasPartida.has(x.id));
+    if (!G.length) G = tasho.filter((x) => !usadas.has(x.id) && (ts.some((t) => t.facturacion_id === x.id) || nums.has(limpio(x.servicio))));
+    if (!G.length) {
+      const cand = tasho.filter((x) => !x.liquidado && !usadas.has(x.id) && x.importe != null && Math.abs(x.importe - l.importe) < 0.01).slice(0, 3)
+        .map((x) => ({ id: x.id, servicio: x.servicio, importe: x.importe, fecha: x.fecha, d: 9, igual: true }));
+      res.nuevos.push({ l, cand, eleccion: 'nueva' });
+      continue;
+    }
+    G.forEach((x) => usadas.add(x.id));
+    const principal = [...G].sort((a, b) => (lineasPartida.get(b.id) || 0) - (lineasPartida.get(a.id) || 0) || (b.importe ?? -1) - (a.importe ?? -1))[0];
+    // lo que paga esta liquidación en cada línea y lo que le queda de partidas posteriores (aún sin liquidar)
+    const filasT = G.map((y) => {
+      const pend = trab.filter((t) => t.facturacion_id === y.id && t.fecha > hasta);
+      return { y, pagado: lineasPartida.get(y.id) ?? (y.id === principal.id && !lineasPartida.size ? l.importe : 0),
+               posterior: r2(pend.reduce((a, t) => a + Number(t.total), 0)) };
+    });
+    const posterior = r2(filasT.reduce((a, x) => a + x.posterior, 0));
+    const pagadoKubel = r2(filasT.reduce((a, x) => a + x.pagado, 0));
+    const fila = { ...principal, servicio: G.length > 1 ? `${principal.servicio} (+${G.length - 1})` : principal.servicio,
+                   importe: lineasPartida.size ? pagadoKubel : (principal.importe ?? null) };
+    const entrada = { l, fila, filas: G, filasT, principal, posterior, ok: true };
+    if (G.every((x) => x.liquidado && (x.factura || '').split(' + ').includes(f.numero))) { res.yaLiq.push({ l, fila: principal }); continue; }
+    // cuadra si todas las partidas del PDF están en lo que leyó el robot de TASHO
+    if (casadas === l.det.length && fila.importe != null && Math.abs(fila.importe - l.importe) < 0.01) res.cuadran.push(entrada);
+    else res.distintos.push(entrada);
+  }
+  res.pendientes = tasho.filter((x) => !x.liquidado && !sinTrabajo(x) && !usadas.has(x.id) && (!x.fecha || x.fecha <= hasta))
+    .sort((a, b) => (a.fecha || '').localeCompare(b.fecha || ''));
+  return res;
+}
 // Distancia entre dos nº de servicio (para sugerir errores al apuntar: 293135710 ↔ 29313570)
 function distancia(a, b) {
   const m = a.length, n = b.length, d = Array.from({ length: m + 1 }, (_, i) => [i, ...Array(n).fill(0)]);
@@ -877,9 +978,18 @@ async function subirFactura(inp) {
   abrirModal('<h3>Leyendo la factura…</h3><p class="sub">Un momento.</p>');
   try {
     await cargarFac();
-    const f = leerFacturaSigma(await textoPDF(file));
-    if (!f.numero || !f.lineas.length) throw new Error('No parece una factura de SIGMA (no se encontró el nº de factura o las líneas de servicios).');
-    cotejo = cotejar(f);
+    const texto = await textoPDF(file);
+    if (esLiquidacionTasho(texto)) {
+      const f = leerLiquidacionTasho(texto);
+      if (!f.numero || !f.lineas.length) throw new Error('No se encontraron la fecha final o las partidas de la liquidación de TASHO.');
+      const suma = r2(f.lineas.reduce((t, l) => t + l.importe, 0));
+      if (f.base != null && Math.abs(suma - f.base) > 0.05) f.aviso = `Las partidas leídas suman ${eur(suma)} y la BASE de la liquidación es ${eur(f.base)}: revisa el PDF.`;
+      cotejo = await cotejarTasho(f);
+    } else {
+      const f = leerFacturaSigma(texto);
+      if (!f.numero || !f.lineas.length) throw new Error('No parece una factura de SIGMA ni una liquidación de TASHO (no se encontró el nº de factura o las líneas de servicios).');
+      cotejo = cotejar(f);
+    }
     pintarCotejo();
   } catch (e) { abrirModal(`<h3>No se pudo leer</h3><p class="error">${esc(mensaje(e))}</p>`); }
 }
@@ -915,17 +1025,18 @@ function cotejar(f) {
   return res;
 }
 function pintarCotejo() {
-  const c = cotejo, f = c.f;
-  const ya = facturas.find((x) => x.numero === f.numero);
+  const c = cotejo, f = c.f, quien = f.compania || 'SIGMA';
+  const ya = facturas.find((x) => x.numero === f.numero && (x.compania || 'SIGMA') === quien);
   const sumaL = r2(f.lineas.reduce((t, l) => t + l.importe, 0));
   const dias = (d) => d ? Math.round((new Date(f.fecha || hoyISO()) - new Date(d)) / 864e5) : '';
   const fila = (x) => `${esc(x.servicio)}`;
   const tabla = (cab, filasHtml) => `<div style="overflow-x:auto"><table><thead><tr>${cab.map((h) => `<th>${h}</th>`).join('')}</tr></thead><tbody>${filasHtml}</tbody></table></div>`;
   abrirModal(`<div class="cot">
-    <h3>Factura ${esc(f.numero)} · ${f.fecha ? fechaCorta(f.fecha) : ''}</h3>
+    <h3>${quien === 'TASHO' ? `Liquidación TASHO${f.desde ? ' del ' + fechaCorta(f.desde) : ''} al ${fechaCorta(f.fecha)}` : `Factura ${esc(f.numero)} · ${f.fecha ? fechaCorta(f.fecha) : ''}`}</h3>
+    ${f.aviso ? `<p class="error">${esc(f.aviso)}</p>` : ''}
     ${ya ? `<p class="nota">Esta factura ya se subió el ${fecha(ya.subida_en)}. Si la aplicas otra vez solo se tocan las líneas que sigan pendientes.</p>` : ''}
     <div class="resumen">
-      <div>Servicios<b>${f.lineas.length} · ${eur(sumaL)}</b></div>
+      <div>${quien === 'TASHO' ? 'Expedientes' : 'Servicios'}<b>${f.lineas.length} · ${eur(sumaL)}</b></div>
       <div>Base<b>${eur(f.base)}</b></div>
       <div>Total con IVA<b>${eur(f.total)}</b></div>
       <div>A transferir<b>${eur(f.a_transferir)}</b></div>
@@ -933,18 +1044,18 @@ function pintarCotejo() {
     ${f.descuentos.length ? `<p class="sub">Descuentos: ${f.descuentos.map((d) => `${esc(d.concepto)} <b>${eur(d.importe)}</b>`).join(' · ')}</p>` : ''}
 
     <h4><span class="chip ok">${c.cuadran.length}</span> Cuadran → pasan a LIQUIDADO</h4>
-    ${c.cuadran.length ? `<p class="sub">${c.cuadran.map((x) => fila(x.fila)).join(' · ')}</p>` : '<p class="sub">Ninguno.</p>'}
+    ${c.cuadran.length ? `<p class="sub">${c.cuadran.map((x) => fila(x.fila) + (x.posterior ? ` <i>(le quedan ${eur(x.posterior)} de partidas posteriores: se apunta la liquidación pero sigue NO LIQUIDADO)</i>` : '')).join(' · ')}</p>` : '<p class="sub">Ninguno.</p>'}
 
     ${c.distintos.length ? `<h4><span class="chip mal">${c.distintos.length}</span> Importe distinto</h4>
-    ${tabla(['Liquidar', 'Servicio', 'Fecha', 'KUBEL', 'SIGMA paga', 'Diferencia'], c.distintos.map((x, i) => `<tr>
+    ${tabla(['Liquidar', 'Servicio', 'Fecha', 'KUBEL', quien + ' paga', 'Diferencia'], c.distintos.map((x, i) => `<tr>
       <td><input type="checkbox" ${x.ok ? 'checked' : ''} onchange="cotejo.distintos[${i}].ok=this.checked"></td>
       <td><b>${esc(x.fila.servicio)}</b></td><td>${fechaCorta(x.fila.fecha)}</td><td>${x.fila.importe == null ? '<i>sin importe</i>' : eur(x.fila.importe)}</td>
       <td>${eur(x.l.importe)}</td><td>${x.fila.importe == null ? '' : eur(r2(x.l.importe - x.fila.importe))}</td></tr>`).join(''))}
-    <p class="sub">Se marcan LIQUIDADO y se guarda lo que paga SIGMA aparte; tu importe no se cambia (sale con ≠ en la tabla). Si no tenían importe, se pone el de la factura.</p>` : ''}
+    <p class="sub">Se marcan LIQUIDADO y se guarda lo que paga ${quien} aparte; tu importe no se cambia (sale con ≠ en la tabla). Si no tenían importe, se pone el de la factura.</p>` : ''}
 
     ${c.nuevos.length ? `<h4><span class="chip av">${c.nuevos.length}</span> Pagados que no tenías apuntados</h4>
-    ${tabla(['Servicio', 'SIGMA paga', 'Dirección', '¿Qué hago?'], c.nuevos.map((x, i) => `<tr>
-      <td><b>${esc(x.l.servicio)}</b></td><td>${eur(x.l.importe)}</td><td style="white-space:normal">${esc(x.l.direccion)}</td>
+    ${tabla(['Servicio', quien + ' paga', 'Dirección', '¿Qué hago?'], c.nuevos.map((x, i) => `<tr>
+      <td><b>${esc(x.l.servicio)}</b>${x.l.idExp ? `<div class="sub" style="font-size:11px">Id Exp. ${esc(x.l.idExp)}</div>` : ''}</td><td>${eur(x.l.importe)}</td><td style="white-space:normal">${esc(x.l.direccion)}</td>
       <td><select onchange="cotejo.nuevos[${i}].eleccion=this.value" style="min-width:240px">
         <option value="nueva">Añadir línea nueva LIQUIDADA</option>
         ${x.cand.map((k) => `<option value="${k.id}" ${x.eleccion === k.id ? 'selected' : ''}>Es la fila ${esc(k.servicio)} (${fechaCorta(k.fecha)}, ${k.importe == null ? 'sin importe' : eur(k.importe)}) → corregir nº</option>`).join('')}
@@ -954,7 +1065,7 @@ function pintarCotejo() {
     ${c.yaLiq.length ? `<h4><span class="chip gr">${c.yaLiq.length}</span> Ya estaban liquidados</h4>
     <p class="sub">${c.yaLiq.map((x) => `${esc(x.l.servicio)} (${esc(x.fila.factura || 'sin factura')})`).join(' · ')}</p>` : ''}
 
-    <h4><span class="chip av">${c.pendientes.length}</span> Siguen sin cobrar de SIGMA (hasta el ${fechaCorta(f.fecha)})</h4>
+    <h4><span class="chip av">${c.pendientes.length}</span> Siguen sin cobrar de ${quien} (hasta el ${fechaCorta(f.fecha)})</h4>
     ${c.pendientes.length ? tabla(['Servicio', 'Fecha', 'Días', 'Operario', 'Importe', 'Nota'], c.pendientes.map((x) => `<tr>
       <td><b>${esc(x.servicio)}</b></td><td>${fechaCorta(x.fecha)}</td><td>${dias(x.fecha)}</td><td>${esc(x.operario || '')}</td>
       <td>${x.importe == null ? '<i>sin importe</i>' : eur(x.importe)}</td><td style="white-space:normal">${esc(x.comentario || x.importe_nota || '')}</td></tr>`).join('')) : '<p class="sub">Ninguno 🎉</p>'}
@@ -970,17 +1081,34 @@ async function aplicarCotejo() {
   try {
     const ahora = new Date().toISOString();
     const ops = [];
-    for (const x of c.cuadran) ops.push(sb.from('facturacion').update({ liquidado: true, factura: num, factura_importe: x.l.importe, liquidado_en: ahora }).eq('id', x.fila.id));
+    const quien = f.compania || 'SIGMA';
+    // TASHO: un expediente puede tener varias líneas (una por visita): todas pasan a LIQUIDADO; lo pagado va en la principal
+    const marcar = (x, d) => {
+      if (!x.filasT) { ops.push(sb.from('facturacion').update({ ...d, factura_importe: x.l.importe, liquidado_en: ahora }).eq('id', x.fila.id)); return; }
+      // TASHO: cada línea guarda el nº de liquidación y lo que paga (sumado a liquidaciones anteriores);
+      // pasa a LIQUIDADO solo si no le quedan partidas posteriores a la fecha final
+      for (const { y, pagado, posterior } of x.filasT) {
+        const previas = (y.factura || '').split(' + ').filter((n) => n && n !== 'TASHO' && n !== num);
+        const u = { factura: [...previas, num].join(' + '),
+                    factura_importe: r2((previas.length ? Number(y.factura_importe || 0) : 0) + (y.id === x.principal.id && !x.filasT.some((z) => z.pagado) ? x.l.importe : pagado)) };
+        if (!posterior) Object.assign(u, { liquidado: true }, y.liquidado ? {} : { liquidado_en: ahora });
+        ops.push(sb.from('facturacion').update(u).eq('id', y.id));
+      }
+    };
+    for (const x of c.cuadran) marcar(x, { liquidado: true, factura: num });
     for (const x of c.distintos.filter((d) => d.ok)) {
-      const d = { liquidado: true, factura: num, factura_importe: x.l.importe, liquidado_en: ahora };
-      if (x.fila.importe == null) Object.assign(d, { importe: x.l.importe, importe_origen: 'factura' });
-      ops.push(sb.from('facturacion').update(d).eq('id', x.fila.id));
+      const d = { liquidado: true, factura: num };
+      if (x.fila.importe == null) {
+        const prin = x.principal || x.fila;
+        ops.push(sb.from('facturacion').update({ importe: x.l.importe, importe_origen: 'factura' }).eq('id', prin.id));
+      }
+      marcar(x, d);
     }
     for (const x of c.nuevos) {
       if (x.eleccion === 'nada') continue;
       if (x.eleccion === 'nueva') {
-        ops.push(sb.from('facturacion').insert({ servicio: x.l.servicio, fecha: f.fecha, compania: 'SIGMA', direccion: x.l.direccion || null,
-          provincia: /\(34/.test(x.l.direccion) ? 'PALENCIA' : /\(47/.test(x.l.direccion) ? 'VALLADOLID' : null,
+        ops.push(sb.from('facturacion').insert({ servicio: x.l.servicio, fecha: x.l.fechaUlt || f.fecha, compania: quien, direccion: x.l.direccion ? x.l.direccion.toUpperCase() : null,
+          provincia: /\(34|PALENCIA/i.test(x.l.direccion) ? 'PALENCIA' : /\(47|VALLADOLID/i.test(x.l.direccion) ? 'VALLADOLID' : null,
           importe: x.l.importe, importe_origen: 'factura', factura_importe: x.l.importe, liquidado: true, factura: num, liquidado_en: ahora, origen: 'factura' }));
       } else {
         const fila = filas.find((y) => y.id === x.eleccion);
@@ -995,18 +1123,18 @@ async function aplicarCotejo() {
     if (err) throw err.error;
     const resumen = { cuadran: c.cuadran.length, distintos: c.distintos.filter((d) => d.ok).length, nuevos: c.nuevos.filter((x) => x.eleccion !== 'nada').length,
       ya_liquidados: c.yaLiq.length, pendientes: c.pendientes.length, aplicada_en: ahora };
-    const { error: e2 } = await sb.from('facturas').upsert({ compania: 'SIGMA', numero: num, fecha: f.fecha, base: f.base, total: f.total, a_transferir: f.a_transferir,
+    const { error: e2 } = await sb.from('facturas').upsert({ compania: quien, numero: num, fecha: f.fecha, base: f.base, total: f.total, a_transferir: f.a_transferir,
       lineas: f.lineas, descuentos: f.descuentos, resumen }, { onConflict: 'compania,numero' });
     if (e2) throw e2;
     cerrarModal();
-    aviso(`Factura ${num}: ${resumen.cuadran + resumen.distintos + resumen.nuevos} servicios liquidados`);
+    aviso(`${quien === 'TASHO' ? 'Liquidación TASHO' : 'Factura'} ${num}: ${resumen.cuadran + resumen.distintos + resumen.nuevos} servicios liquidados`);
     await cargarFac(true);
   } catch (e) { $('#m-error').textContent = 'Error: ' + mensaje(e); $('#btn-aplicar').disabled = false; }
 }
 function pintarFacturas() {
-  if (!facturas.length) { $('#fac-facturas').innerHTML = '<p class="suave">Aún no se ha subido ninguna. Usa «Subir factura SIGMA» con el PDF que manda SIGMA.</p>'; return; }
+  if (!facturas.length) { $('#fac-facturas').innerHTML = '<p class="suave">Aún no se ha subido ninguna. Usa «Subir factura» con el PDF que manda SIGMA o la liquidación de TASHO.</p>'; return; }
   $('#fac-facturas').innerHTML = `<div class="tabla-fac" style="display:block"><table><thead><tr><th>Factura</th><th>Fecha</th><th class="num">Servicios</th><th class="num">Base</th><th class="num">Total</th><th class="num">A transferir</th><th>Cotejo</th></tr></thead><tbody>
-    ${facturas.map((x) => `<tr><td><b>${esc(x.numero)}</b></td><td>${fechaCorta(x.fecha)}</td><td class="num">${(x.lineas || []).length}</td><td class="num">${eur(x.base)}</td><td class="num">${eur(x.total)}</td><td class="num">${eur(x.a_transferir)}</td>
+    ${facturas.map((x) => `<tr><td><b>${esc(x.numero)}</b>${x.compania && x.compania !== 'SIGMA' ? ` <span class="chip gr">${esc(x.compania)}</span>` : ''}</td><td>${fechaCorta(x.fecha)}</td><td class="num">${(x.lineas || []).length}</td><td class="num">${eur(x.base)}</td><td class="num">${eur(x.total)}</td><td class="num">${eur(x.a_transferir)}</td>
       <td>${x.resumen ? `<span class="chip ok">${x.resumen.cuadran} cuadran</span> ${x.resumen.distintos ? `<span class="chip mal">${x.resumen.distintos} distintos</span>` : ''} ${x.resumen.nuevos ? `<span class="chip av">${x.resumen.nuevos} no apuntados</span>` : ''}` : ''}
       <button class="mini sec" onclick="$('#ff-q').value='${esc(x.numero)}';pintarFac();scrollTo(0,0)">Ver</button></td></tr>`).join('')}</tbody></table></div>`;
 }
