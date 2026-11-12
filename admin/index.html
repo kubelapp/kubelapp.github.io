@@ -368,7 +368,7 @@
     <div class="filtros">
       <select id="ev-per" onchange="pintarEv()" title="Periodo de envío"></select>
       <select id="ev-cta" onchange="pintarEv()" title="Cuenta"><option value="">VLL y PAL</option><option value="VLL">SIGMA VALLADOLID</option><option value="PAL">SIGMA PALENCIA</option></select>
-      <select id="ev-tipo" onchange="pintarEv()" title="Tipo"><option value="">Urgencias y visitas fallidas</option><option>URGENCIA</option><option>VISITA FALLIDA</option></select>
+      <select id="ev-tipo" onchange="pintarEv()" title="Tipo"><option value="">Todos los eventos</option><option>URGENCIA</option><option>VISITA FALLIDA</option><option>DESATASCO CAMIÓN CUBA</option></select>
       <select id="ev-env" onchange="pintarEv()" title="Envío"><option value="">Enviados y sin enviar</option><option value="no">Sin enviar</option><option value="si">Enviados</option></select>
     </div>
     <div id="ev-plazo" class="nota ev-plazo"></div>
@@ -376,6 +376,7 @@
     <div id="ev-lista"><p class="suave">Cargando…</p></div>
     <p class="nota-est">Se apuntan solos: cada servicio <b>urgente de SIGMA que se cierra</b> (día de visita = primera visita hecha, o el día 1 del mes si no hay ninguna en KUBEL; periodo por la fecha de cierre)
       y cada visita de SIGMA que el operario marca <b>«No se pudo realizar»</b> (periodo por el día de esa visita).
+      Los <b>desatascos con camión cuba</b> se apuntan a mano con «+ Añadir evento».
       Periodo de envío = del 20 del mes anterior al 19; se manda al delegado antes del 20. Si el servicio se reabre o la visita cambia, la línea se quita sola (salvo si ya está enviada o tiene el día puesto a mano).</p>
   </main>
 </div>
@@ -1544,12 +1545,13 @@ async function excelKm() {
 
 // =====================================================================
 //  EVENTOS SIGMA · 12/11/2026 (SQL 46)
-//  SIGMA paga aparte las URGENCIAS y las VISITAS FALLIDAS («eventos»). Se mandan al delegado de zona en un Excel
+//  SIGMA paga aparte las URGENCIAS, las VISITAS FALLIDAS y (SQL 49) los DESATASCOS CON CAMIÓN CUBA («eventos»). Se mandan al delegado de zona en un Excel
 //  por cuenta (VLL / PAL) antes del día 20. Periodo 'AAAA-MM' = del 20 del mes anterior al 19 de ese mes.
 //  La tabla eventos_sigma la rellena la BD sola (urgente que se cierra; visita «No se pudo realizar»).
 // =====================================================================
 let evFilas = [], evCargado = false, canalEv = null;
 const CTA_EV = { VLL: 'SIGMA VALLADOLID', PAL: 'SIGMA PALENCIA' };
+const EV_ORDEN = { 'URGENCIA': 0, 'VISITA FALLIDA': 1, 'DESATASCO CAMIÓN CUBA': 2 };   // orden en el Excel (SQL 49: camión cuba, a mano)
 function evPeriodoDe(f) {   // igual que public.evento_periodo
   if (!f) return '';
   const [y, m, d] = f.split('-').map(Number);
@@ -1617,6 +1619,7 @@ function pintarEv() {
   $('#ev-kpis').innerHTML = `
     <div class="kpi"><b>${n((x) => x.tipo === 'URGENCIA')}</b><span>Urgencias</span></div>
     <div class="kpi"><b>${n((x) => x.tipo === 'VISITA FALLIDA')}</b><span>Visitas fallidas</span></div>
+    <div class="kpi"><b>${n((x) => x.tipo === 'DESATASCO CAMIÓN CUBA')}</b><span>Desatascos camión cuba</span></div>
     <div class="kpi"><b>${n((x) => x.cuenta === 'VLL')}</b><span>SIGMA Valladolid</span></div>
     <div class="kpi"><b>${n((x) => x.cuenta === 'PAL')}</b><span>SIGMA Palencia</span></div>
     <div class="kpi"><b>${n((x) => x.enviado_en)}</b><span>Enviados al delegado</span></div>
@@ -1625,7 +1628,7 @@ function pintarEv() {
   $('#ev-lista').innerHTML = ver.length ? `<div class="tabla-km"><table><thead><tr>
       <th>Evento</th><th>Servicio</th><th>Cuenta</th><th>Día de visita</th><th>Dirección</th><th>Población</th><th>Operario</th><th>Referencia</th><th>Comentario</th><th>Enviado</th><th></th></tr></thead><tbody>
     ${ver.map((x) => `<tr data-k="${x.id}" class="${x.enviado_en ? 'env' : ''} ${!x.fecha_visita ? 'sinf' : ''}">
-      <td><span class="chip ${x.tipo === 'URGENCIA' ? 'mal' : 'av'}">${esc(x.tipo)}</span>${x.origen === 'manual' ? ' <span class="chip gr">a mano</span>' : ''}</td>
+      <td><span class="chip ${x.tipo === 'URGENCIA' ? 'mal' : x.tipo === 'DESATASCO CAMIÓN CUBA' ? 'ok' : 'av'}">${esc(x.tipo)}</span>${x.origen === 'manual' ? ' <span class="chip gr">a mano</span>' : ''}</td>
       <td><b>${esc(x.servicio || '—')}</b></td>
       <td>${esc(x.cuenta || '—')}</td>
       <td><input type="date" class="evf" value="${esc(x.fecha_visita || '')}" onchange="guardarEv('${x.id}', 'fecha_visita', this)" title="${x.fecha_manual ? 'Puesto a mano (la BD ya no lo cambia)' : 'Automático'}">${x.fecha_manual ? ' ✎' : ''}
@@ -1685,7 +1688,7 @@ function modalEvento() {
   abrirModal(`
     <h3>Nuevo evento SIGMA</h3>
     <div class="sub">Para un evento que KUBEL no haya apuntado solo. Va al periodo que elijas.</div>
-    <div class="dos"><div><label>Evento</label><select id="em-tipo"><option>URGENCIA</option><option>VISITA FALLIDA</option></select></div>
+    <div class="dos"><div><label>Evento</label><select id="em-tipo"><option>URGENCIA</option><option>VISITA FALLIDA</option><option>DESATASCO CAMIÓN CUBA</option></select></div>
       <div><label>Cuenta</label><select id="em-cta"><option value="VLL">SIGMA VALLADOLID</option><option value="PAL">SIGMA PALENCIA</option></select></div></div>
     <div class="dos"><div><label>Nº servicio</label><input id="em-serv" inputmode="numeric"></div>
       <div><label>Día de visita</label><input type="date" id="em-fecha" value="${hoyISO()}"></div></div>
@@ -1716,7 +1719,7 @@ async function excelEv(cta) {
     const per = $('#ev-per').value;
     if (!per) return aviso('Elige primero un periodo');
     const filas = evFilas.filter((x) => x.periodo === per && x.cuenta === cta)
-      .sort((a, b) => a.tipo.localeCompare(b.tipo) === 0 ? (a.fecha_visita || '').localeCompare(b.fecha_visita || '') : (a.tipo === 'URGENCIA' ? -1 : 1));
+      .sort((a, b) => (EV_ORDEN[a.tipo] ?? 9) - (EV_ORDEN[b.tipo] ?? 9) || (a.fecha_visita || '').localeCompare(b.fecha_visita || ''));
     if (!filas.length) return aviso(`No hay eventos de ${CTA_EV[cta]} en ${nombreMes(per)}`);
     const sinF = filas.filter((x) => !x.fecha_visita).length;
     if (sinF && !confirm(`${sinF} evento${sinF === 1 ? '' : 's'} sin día de visita. ¿Descargar el Excel igualmente?`)) return;
@@ -1724,11 +1727,11 @@ async function excelEv(cta) {
     const r = evRango(per);
     const cab = ['Nº SERVICIO', 'EVENTO', 'DÍA DE VISITA', 'DIRECCIÓN', 'POBLACIÓN'];
     const datos = filas.map((x) => [x.servicio || '', x.tipo, x.fecha_visita ? new Date(x.fecha_visita + 'T00:00:00') : '', x.direccion || '', x.poblacion || '']);
-    const nU = filas.filter((x) => x.tipo === 'URGENCIA').length, nF = filas.length - nU;
+    const nT = (t) => filas.filter((x) => x.tipo === t).length;
     const aoa = [[`KUBEL DISEÑO, SL · ${CTA_EV[cta]} · Eventos del ${evFechaL(r.desde)} al ${evFechaL(r.hasta)}`], [], cab, ...datos, [],
-      ['URGENCIAS', nU], ['VISITAS FALLIDAS', nF], ['TOTAL EVENTOS', filas.length]];
+      ['URGENCIAS', nT('URGENCIA')], ['VISITAS FALLIDAS', nT('VISITA FALLIDA')], ['DESATASCOS CAMIÓN CUBA', nT('DESATASCO CAMIÓN CUBA')], ['TOTAL EVENTOS', filas.length]];
     const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true, dateNF: 'dd/mm/yyyy' });
-    ws['!cols'] = [14, 17, 14, 42, 22].map((w) => ({ wch: w }));
+    ws['!cols'] = [14, 24, 14, 42, 22].map((w) => ({ wch: w }));
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Eventos');
     XLSX.writeFile(wb, `KUBEL-eventos-${CTA_EV[cta].replace(' ', '-')}-${per}.xlsx`);
     aviso('Excel descargado. Cuando lo mandes, pulsa «✓ Marcar enviado».');
