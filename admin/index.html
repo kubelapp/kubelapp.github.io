@@ -210,6 +210,18 @@
   .g-c input.calc,.modal input.calc{background:#F1EEE8;color:var(--suave)}
   .tabla-fac tr.borr td{background:#FFF8EC}
   .tabla-fac td.desc{white-space:normal;min-width:160px;max-width:260px}
+  /* Facturación: la tabla cabe en la pantalla, sin desplazamiento lateral */
+  .tabla-fac.fac-fija{overflow-x:hidden}
+  .fac-fija table{width:100%;table-layout:fixed}
+  .fac-fija table{font-size:12.5px}
+  .fac-fija th,.fac-fija td{white-space:normal;overflow-wrap:break-word;padding:6px 5px}
+  .fac-fija th{font-size:10.5px}
+  .fac-fija td:nth-child(3){overflow-wrap:anywhere}
+  .fac-fija td.dir{min-width:0;max-width:none}
+  .fac-fija input.imp,.fac-fija input.fac,.fac-fija input.com{width:100%;min-width:0}
+  .fac-fija .est{display:inline-block;white-space:normal;text-align:center;padding:4px 6px;line-height:1.25}
+  .fac-fija .nota-imp{max-width:none}
+  .fac-fija .mini{padding:4px 6px}
   .adj-l{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}
   .adj-l .chip{cursor:pointer}
   .g-res td.num,.g-res th.num{text-align:right;font-variant-numeric:tabular-nums}
@@ -690,9 +702,9 @@ function pintarFac() {
     ? `<span class="dif" title="La factura de compañía dice ${eur(x.factura_importe)}">≠ ${eur(x.factura_importe)}</span>` : '';
   const nota = (x) => x.importe == null && x.importe_nota ? `<span class="nota-imp">${esc(x.importe_nota)}</span>` : '';
   const est = (x) => `<button class="est ${x.liquidado ? 'si' : 'no'}" onclick="cambiarLiq('${x.id}')" title="Cambiar estado">${x.liquidado ? 'LIQUIDADO' : 'NO LIQUIDADO'}</button>`;
-  const inp = (x, campo, cls, ph) => `<input class="${cls}" value="${esc(campo === 'importe' ? (x.importe == null ? '' : String(x.importe).replace('.', ',')) : x[campo] ?? '')}" placeholder="${ph}" onchange="guardarCampo('${x.id}','${campo}',this)" onkeydown="if(event.key==='Enter')this.blur()">`;
+  const inp = (x, campo, cls, ph) => `<input class="${cls}" value="${esc(campo === 'importe' ? (x.importe == null ? '' : String(x.importe).replace('.', ',')) : x[campo] ?? '')}" placeholder="${ph}" title="${campo === 'importe' ? '' : esc(x[campo] ?? '')}" onchange="guardarCampo('${x.id}','${campo}',this)" onkeydown="if(event.key==='Enter')this.blur()">`;
   $('#fac-lista').innerHTML = `
-    <div class="tabla-fac"><table><thead><tr>
+    <div class="tabla-fac fac-fija"><table><colgroup><col style="width:6%"><col style="width:6%"><col style="width:10%"><col style="width:12%"><col style="width:7.5%"><col style="width:7.5%"><col style="width:6%"><col style="width:6.5%"><col style="width:7%"><col style="width:6%"><col style="width:5.5%"><col style="width:10%"><col style="width:7%"><col style="width:3%"></colgroup><thead><tr>
       <th>Fecha</th><th>Mes</th><th>Servicio</th><th>Dirección</th><th>Provincia</th><th>Operario</th><th>Compañía</th><th>Cerrado por</th>
       <th class="num">Importe</th><th class="num">Con IVA</th><th>Factura</th><th>Comentario</th><th>Estado</th><th></th></tr></thead><tbody>
     ${lista.map((x) => `<tr class="${x.importe == null ? 'sin-imp' : ''} ${x.liquidado ? 'liq' : ''}">
