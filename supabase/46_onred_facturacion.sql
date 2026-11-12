@@ -210,9 +210,10 @@ returns text[] language sql stable security definer set search_path = public, pr
       join facturacion f on f.parte_id = p.id and not f.liquidado and (f.importe is null or f.importe_origen = 'onred')
       left join onred_servicios o on o.numero = p.numero_servicio
      where p.compania_id = 4 and p.estado <> 'anulado' and p.numero_servicio ~ '^[0-9]{6,8}$'
-       -- sin la 1.ª visita marcada en ONRED no hay Valoración (y pedir su ficha de gestión cierra la sesión)
-       and coalesce(p.onred_estado, '') !~* '^(pendiente de cita|citado)'
+       -- sin la 1.ª visita marcada en ONRED no hay Valoración (y pedir su ficha de gestión cierra la sesión);
+       -- solo si sigue en las listas: fuera de ellas el estado guardado es viejo (ONRED no enseña la ficha del terminado)
+       and not (o.lista is not null and coalesce(p.onred_estado, '') ~* '^(pendiente de cita|citado)')
        and (o.valoracion_en is null or o.valoracion_en < now() - interval '3 hours')   -- valoracion_en = último intento
-     order by o.valoracion_en nulls first, (p.onred_estado is not null), f.fecha
+     order by o.valoracion_en nulls first, (o.lista is not null), f.fecha
      limit p_max) x
 $$;
