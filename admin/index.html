@@ -387,8 +387,8 @@
     <div id="ev-kpis" class="kpis"></div>
     <div id="ev-lista"><p class="suave">Cargando…</p></div>
     <p class="nota-est">Se apuntan solos: cada servicio <b>urgente de SIGMA que se cierra</b> (día de visita = primera visita hecha, o el día 1 del mes si no hay ninguna en KUBEL; periodo por la fecha de cierre)
-      y cada visita de SIGMA que el operario marca <b>«No se pudo realizar»</b> (periodo por el día de esa visita).
-      Los <b>desatascos con camión cuba</b> se apuntan a mano con «+ Añadir evento».
+      y cada visita de SIGMA que el operario marca <b>«No se pudo realizar»</b> (periodo por el día de esa visita),
+      y cada servicio de SIGMA del gremio <b>22A con la partida F45 aceptada</b> en el presupuesto (<b>desatasco con camión cuba</b>; día de visita = primera visita hecha, o el día de la F45; periodo por el día en que se aceptó la F45).
       Periodo de envío = del 20 del mes anterior al 19; se manda al delegado antes del 20. Si el servicio se reabre o la visita cambia, la línea se quita sola (salvo si ya está enviada o tiene el día puesto a mano).</p>
   </main>
 </div>
@@ -1559,11 +1559,11 @@ async function excelKm() {
 //  EVENTOS SIGMA · 12/11/2026 (SQL 46)
 //  SIGMA paga aparte las URGENCIAS, las VISITAS FALLIDAS y (SQL 49) los DESATASCOS CON CAMIÓN CUBA («eventos»). Se mandan al delegado de zona en un Excel
 //  por cuenta (VLL / PAL) antes del día 20. Periodo 'AAAA-MM' = del 20 del mes anterior al 19 de ese mes.
-//  La tabla eventos_sigma la rellena la BD sola (urgente que se cierra; visita «No se pudo realizar»).
+//  La tabla eventos_sigma la rellena la BD sola (urgente que se cierra; visita «No se pudo realizar»; 22A con F45 aceptada).
 // =====================================================================
 let evFilas = [], evCargado = false, canalEv = null;
 const CTA_EV = { VLL: 'SIGMA VALLADOLID', PAL: 'SIGMA PALENCIA' };
-const EV_ORDEN = { 'URGENCIA': 0, 'VISITA FALLIDA': 1, 'DESATASCO CAMIÓN CUBA': 2 };   // orden en el Excel (SQL 49: camión cuba, a mano)
+const EV_ORDEN = { 'URGENCIA': 0, 'VISITA FALLIDA': 1, 'DESATASCO CAMIÓN CUBA': 2 };   // orden en el Excel (SQL 49–50: camión cuba = 22A con F45 aceptada)
 function evPeriodoDe(f) {   // igual que public.evento_periodo
   if (!f) return '';
   const [y, m, d] = f.split('-').map(Number);
@@ -1648,7 +1648,7 @@ function pintarEv() {
       <td style="white-space:normal;min-width:180px">${esc(x.direccion || '')}</td>
       <td>${esc(x.poblacion || '')}</td>
       <td>${esc(x.operario || '—')}</td>
-      <td class="suave">${x.tipo === 'URGENCIA' ? 'Cierre' : 'Visita'} ${fechaCorta(x.fecha_ref)}</td>
+      <td class="suave">${x.tipo === 'URGENCIA' ? 'Cierre' : x.tipo === 'DESATASCO CAMIÓN CUBA' && x.origen === 'auto' ? 'F45 aceptada' : 'Visita'} ${fechaCorta(x.fecha_ref)}</td>
       <td><input class="com" value="${esc(x.comentario || '')}" onchange="guardarEv('${x.id}', 'comentario', this)"></td>
       <td>${x.enviado_en ? `<span class="chip ok" title="${esc(fecha(x.enviado_en))}">✓ ${fechaCorta(x.enviado_en.slice(0, 10))}</span> <button class="mini sec" onclick="enviadoEv('${x.id}', false)" title="Quitar la marca de enviado">↺</button>`
         : `<button class="mini sec" onclick="enviadoEv('${x.id}', true)">Marcar</button>`}</td>
