@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = 'lector-5'  # v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
+VERSION = 'lector-6'  # v6: si ONRED cierra la sesión en una Valoración, entra de nuevo (hasta 3 veces) y sigue con las demás. v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
 BASE = os.environ.get('ONRED_BASE', 'https://www.funcionareparaciones.es/cronosp/')  # ONRED_BASE: solo pruebas
 KUBEL_URL_DEF = 'https://hytmotuhdxbzpustnlzx.supabase.co/functions/v1/onred-recibir'
 COOKIES = os.environ.get('ONRED_COOKIES', '/var/lib/kubel-onred/cookies.txt')
@@ -205,7 +205,9 @@ def valoracion(p, n, prof):
             b = m.group(0)
             break
     if not b:
-        raise Fallo('La ficha no tiene el botón Valoración')
+        t = re.sub(r'<[^>]+>', ' ', ligero(html))
+        t = re.sub(r'\s+', ' ', htmlmod.unescape(t)).strip()
+        raise Fallo('La ficha no tiene el botón Valoración: ' + t[:150])
     f = formulario(html)
     f['__EVENTTARGET'] = ''
     f['__EVENTARGUMENT'] = ''
@@ -302,17 +304,18 @@ def main():
             enviadas += a_kubel({'lector': VERSION, 'ronda': 2, 'lectura': r.get('lectura'),
                                  'segundos': seg(), 'fichas': tanda}).get('fichas', 0)
         # Valoraciones (importe para Facturación), en tandas de 4 (páginas grandes)
-        vals, nval = {}, 0
+        vals, nval, reentradas = {}, 0, 0
         for n in r.get('valorar') or []:
             if time.time() - inicio > TOPE:
                 print('Tope de tiempo: quedan valoraciones para la próxima pasada')
                 break
             try:
                 html = valoracion(p, n, prof)
-                if pide_login(html) and not renovada:
+                if pide_login(html) and reentradas < 3:
+                    # ONRED a veces cierra la sesión al pedir la ficha de gestión de un servicio: entrar y repetir
                     prof = entrar(p, usuario, clave)
-                    renovada = True
-                    print('Sesión de ONRED renovada para las valoraciones')
+                    reentradas += 1
+                    print('Sesión de ONRED renovada para la Valoración de', n)
                     html = valoracion(p, n, prof)
                 if pide_login(html):
                     raise Fallo('ONRED no deja ver la Valoración de este servicio')
