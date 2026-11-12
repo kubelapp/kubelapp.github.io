@@ -1,4 +1,6 @@
-// KUBEL — onred-recibir (v3, 11/11/2026). v3: guarda el error de una ficha aunque el servicio no esté aún en
+// KUBEL — onred-recibir (v4, 12/11/2026). v4: pide al lector la «Valoración» de los servicios OnRed con línea de
+// Facturación sin liquidar (privado.onred_valorar, SQL 46), la lee (leerValoracion) y la vuelca en partes.onred_importe
+// (privado.onred_valoracion_volcar) → importe en Facturación. v3: guarda el error de una ficha aunque el servicio no esté aún en
 // onred_servicios y dice al lector qué versión debe tener (privado.ajustes 'onred_lector_commit'). v2: vuelca en Servicios (privado.onred_volcar, SQL 42), pide también las
 // fichas de los servicios OnRed abiertos que ya no salen en las listas (para cerrarlos) y avisa a la oficina.
 // v1: Recibe del «lector» del servidor kubel-onred (Clouding, Barcelona)
@@ -7,14 +9,15 @@
 //
 // Toda la lectura de las páginas se hace AQUÍ; el lector solo descarga y reenvía.
 //  Ronda 1: POST { lector, ronda: 1, profesional, segundos, listas: { pendiente_cita, citado, en_curso } (html) }
-//           → { ok, lectura, nuevos, desaparecidos, pedir: [nº…] }  (fichas que quiere: las de las listas y las
+//           → { ok, lectura, nuevos, desaparecidos, pedir: [nº…], valorar: [nº…] }  (fichas que quiere: las de las listas y las
 //             de los que dejaron de salir hace < 3 días, para saber cómo acabaron; máx. 40, las más antiguas antes)
-//  Ronda 2: POST { lector, ronda: 2, lectura, segundos, fichas: { <nº>: html | { error } } }  (en tandas)
+//  Ronda 2: POST { lector, ronda: 2, lectura, segundos, fichas: { <nº>: html | { error } },
+//                  valoraciones: { <nº>: html | { error } } }  (en tandas)
 //  Error:   POST { lector, profesional?, segundos, error }  (no pudo entrar o descargar)
 // Autenticación: cabecera x-onred-lector (su huella SHA-256 está en privado.ajustes 'onred_lector_hash')
 // o x-kubel-secreto (pruebas desde la BD).
 import postgres from 'npm:postgres@3.4.4';
-import { leerFicha, leerLista, type Fila } from '../_onred/leer.ts';
+import { leerFicha, leerLista, leerValoracion, type Fila } from '../_onred/leer.ts';
 
 const LISTAS = ['pendiente_cita', 'citado', 'en_curso'] as const;
 const sql = postgres(Deno.env.get('SUPABASE_DB_URL')!, { max: 1, prepare: false });
@@ -47,6 +50,7 @@ async function avisar(nuevo: Record<string, unknown>) {
 type Cuerpo = {
   lector?: string; ronda?: number; lectura?: number; profesional?: string; segundos?: number; error?: string;
   listas?: Record<string, string>; fichas?: Record<string, string | { error: string }>;
+  valoraciones?: Record<string, string | { error: string }>;
 };
 
 Deno.serve(async (req) => {
@@ -96,6 +100,15 @@ Deno.serve(async (req) => {
     catch (err) { fichas.set(numero, { error: (err as Error).message }); }
   }
 
+  // 2b) Valoraciones (importe de Facturación)
+  const valoraciones = new Map<string, { valoracion?: unknown; error?: string }>();
+  for (const [numero, v] of Object.entries(c.valoraciones ?? {})) {
+    if (!/^\d{6,8}$/.test(numero)) continue;
+    if (typeof v !== 'string') { valoraciones.set(numero, { error: String(v?.error ?? 'sin página').slice(0, 500) }); continue; }
+    try { valoraciones.set(numero, { valoracion: leerValoracion(v) }); }
+    catch (err) { valoraciones.set(numero, { error: (err as Error).message }); }
+  }
+
   // 3) Guardar
   const r = await sql.begin(async (tx) => {
     const antes = new Set((await tx`select numero from public.onred_servicios where lista is not null`).map((x) => x.numero as string));
@@ -131,6 +144,17 @@ Deno.serve(async (req) => {
                  on conflict (numero) do update set ficha_error = excluded.ficha_error`;
       }
     }
+    for (const [numero, v] of valoraciones) {
+      // valoracion_en = último intento (bien o mal): KUBEL no la vuelve a pedir hasta 3 h después
+      if (v.valoracion) {
+        await tx`insert into public.onred_servicios (numero, valoracion, valoracion_en, valoracion_error)
+                 values (${numero}, ${tx.json(v.valoracion as Record<string, unknown>)}, now(), null)
+                 on conflict (numero) do update set valoracion = excluded.valoracion, valoracion_en = now(), valoracion_error = null`;
+      } else {
+        await tx`insert into public.onred_servicios (numero, valoracion_en, valoracion_error) values (${numero}, now(), ${v.error ?? null})
+                 on conflict (numero) do update set valoracion_en = now(), valoracion_error = excluded.valoracion_error`;
+      }
+    }
     if (ronda === 2) {
       // Suma las fichas a la lectura de la ronda 1
       if (c.lectura) await tx`update public.onred_lecturas set fichas = coalesce(fichas, 0) + ${nFichas},
@@ -150,12 +174,13 @@ Deno.serve(async (req) => {
                     and coalesce(s.lista, '') = '' and (s.ficha_en is null or s.ficha_en < now() - interval '6 hours')
                     and s.ficha_error is null   -- ONRED no enseña la ficha de los ya terminados: no insistir
                   order by 2 nulls first limit 40`).map((x) => x.numero as string);
+    const [{ valorar }] = await tx`select privado.onred_valorar(12) as valorar`;
     const [l] = await tx`insert into public.onred_lecturas (ok, profesional, lector, listas, fichas, nuevos, desaparecidos, segundos)
              values (true, ${base.profesional}, ${base.lector}, ${tx.json(cuenta)}, 0, ${nuevos}, ${desaparecidos}, ${base.segundos})
              returning id`;
     // Versión del lector que debe tener el servidor (commit del repo); el lector se actualiza solo si no coincide
     const [vc] = await tx`select valor from privado.ajustes where clave = 'onred_lector_commit'`;
-    return { lectura: l.id as number, nuevos, desaparecidos, pedir, tocados, lector_commit: (vc?.valor as string) ?? null };
+    return { lectura: l.id as number, nuevos, desaparecidos, pedir, valorar: valorar as string[], tocados, lector_commit: (vc?.valor as string) ?? null };
   });
 
   // 4) Volcar en Servicios y avisar a la oficina
@@ -166,5 +191,11 @@ Deno.serve(async (req) => {
     volcado = v.v;
     if (volcado && (volcado.nuevos.length || volcado.cerrados.length)) await avisar({ nuevos: volcado.nuevos, cerrados: volcado.cerrados });
   }
-  return json({ ok: true, ...resto, volcado });
+  let valorados: number | null = null;
+  const conValoracion = [...valoraciones].filter(([, v]) => v.valoracion).map(([n]) => n);
+  if (conValoracion.length) {
+    const [v] = await sql`select privado.onred_valoracion_volcar(${sql.array(conValoracion)}::text[]) as n`;
+    valorados = v.n as number;
+  }
+  return json({ ok: true, ...resto, volcado, valoraciones: valoraciones.size, valorados });
 });

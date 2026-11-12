@@ -41,6 +41,48 @@ const CAMPOS_FICHA: Record<string, string> = {
   TxtPoblacion: 'poblacion', TxtProvincia: 'provincia', TxtObsDomCli: 'obs_domicilio',
 };
 
+// Tabla de un GridView como lista de objetos (cabecera = primera fila)
+function tablaDe(t: Element | null) {
+  if (!t) return [] as Record<string, string>[];
+  const trs = [...t.querySelectorAll('tr')] as Element[];
+  const cab = [...(trs[0]?.querySelectorAll('th,td') ?? [])].map((c) => limpio((c as Element).textContent));
+  return trs.slice(1).map((tr) => {
+    const o: Record<string, string> = {};
+    [...tr.querySelectorAll('td')].forEach((c, i) => { if (cab[i]) o[cab[i]] = limpio((c as Element).textContent); });
+    return o;
+  }).filter((o) => Object.values(o).some(Boolean));
+}
+
+// «1.234,56» → 1234.56
+export const numero = (t?: string | null) => {
+  const s = (t ?? '').replace(/[^\d,.-]/g, '').replace(/\./g, '').replace(',', '.');
+  return s === '' || isNaN(Number(s)) ? null : Number(s);
+};
+
+// Ventana «Valoración» (VerServicio.aspx?id=3_<nº>_<prof> tras pulsar Valoración). Solo lectura.
+// servicios = una fila por servicio del siniestro (Pend / Acep / Rech / Total, sin IVA); partidas = líneas valoradas.
+export function leerValoracion(html: string) {
+  if (pideLogin(html)) throw new Error('Sesión caducada en la Valoración');
+  const d = parse(html);
+  const porFin = (sufijo: string) =>
+    ([...d.querySelectorAll('[id]')] as Element[]).find((e) => e.getAttribute('id')!.endsWith('UCValoraciones_' + sufijo)) ?? null;
+  const gv = porFin('GVServicios');
+  if (!gv) throw new Error('La página no trae la Valoración');
+  const servicios = tablaDe(gv).map((o) => ({
+    numero: o['Servicios'] ?? '', profesion: o['Profesión'] ?? '', profesional: o['Profesional'] ?? '',
+    estado: o['Estado Serv.'] ?? '', pend: numero(o['Pend']), acep: numero(o['Acep']), rech: numero(o['Rech']), total: numero(o['Total']),
+  })).filter((s) => /^\d{6,8}$/.test(s.numero));
+  const val = (s: string) => numero(porFin(s)?.getAttribute('value'));
+  const sin = /Valoraciones del Siniestro\s*(\d+)/.exec(limpio(d.body?.textContent ?? ''));
+  return {
+    siniestro: sin?.[1] ?? null,
+    servicios,
+    partidas: tablaDe(porFin('GVPartidasProf')),
+    totales: { total: val('TxtTotVal'), franquicia: val('TxtimpFranquicia'), saldo_franquicia: val('TxtImpSaldoFranquicia'),
+               aceptado: val('TxtImpAcep'), pendiente: val('TxtImpPend') },
+  };
+}
+
 export function leerFicha(html: string) {
   if (pideLogin(html)) throw new Error('Sesión caducada en la ficha');
   const d = parse(html);

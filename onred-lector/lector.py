@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""KUBEL — Lector de ONRED (v4, 11/11/2026). Vive en el servidor kubel-onred (Clouding.io, Barcelona).
+"""KUBEL — Lector de ONRED (v5, 12/11/2026). Vive en el servidor kubel-onred (Clouding.io, Barcelona).
 
 ONRED solo admite conexiones desde España, así que este programa entra en el portal, descarga las listas
 y las fichas de los servicios y se las manda a KUBEL (Edge Function onred-recibir), que es quien las lee y
-las guarda. SOLO LECTURA: nunca pulsa nada en el portal.
+las guarda. SOLO LECTURA: nunca graba nada en el portal. Lo único que «pulsa» es el botón Valoración de la ficha de
+gestión (abre la ventana con los importes, igual que el navegador; no cambia nada) para que KUBEL ponga el importe en Facturación.
 
 Configuración en /etc/kubel-onred.env (solo root; la lee este programa): ONRED_USUARIO, ONRED_CLAVE, KUBEL_SECRETO [, KUBEL_URL].
 Uso:  lector.py            una pasada completa (lo lanza el temporizador kubel-onred.timer)
       lector.py --prueba   solo entra y cuenta los servicios de cada lista (no manda nada a KUBEL)
 Sin paquetes extra: solo Python 3.
 """
+import html as htmlmod
 import http.cookiejar
 import json
 import os
@@ -20,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = 'lector-4'  # v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
+VERSION = 'lector-5'  # v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
 BASE = os.environ.get('ONRED_BASE', 'https://www.funcionareparaciones.es/cronosp/')  # ONRED_BASE: solo pruebas
 KUBEL_URL_DEF = 'https://hytmotuhdxbzpustnlzx.supabase.co/functions/v1/onred-recibir'
 COOKIES = os.environ.get('ONRED_COOKIES', '/var/lib/kubel-onred/cookies.txt')
@@ -171,6 +173,47 @@ def entrar(p, usuario, clave):
     return m.group(1)
 
 
+def formulario(html):
+    """Lo que manda el navegador al pulsar un botón: inputs (sin botones ni casillas desmarcadas) y desplegables."""
+    f = campos(html)
+    for m in re.finditer(r'<input\b[^>]*>', html, re.I):
+        t = m.group(0)
+        if re.search(r'\btype="(checkbox|radio)"', t, re.I) and re.search(r'\bchecked\b', t, re.I):
+            n = re.search(r'\bname="([^"]*)"', t)
+            v = re.search(r'\bvalue="([^"]*)"', t)
+            if n:
+                f[htmlmod.unescape(n.group(1))] = htmlmod.unescape(v.group(1)) if v else 'on'
+    for m in re.finditer(r'<select\b([^>]*)>([\s\S]*?)</select>', html, re.I):
+        n = re.search(r'\bname="([^"]*)"', m.group(1))
+        if not n:
+            continue
+        op = re.search(r'<option\b[^>]*\bselected\b[^>]*>', m.group(2), re.I) or re.search(r'<option\b[^>]*>', m.group(2), re.I)
+        v = re.search(r'\bvalue="([^"]*)"', op.group(0)) if op else None
+        f[htmlmod.unescape(n.group(1))] = htmlmod.unescape(v.group(1)) if v else ''
+    return f
+
+
+def valoracion(p, n, prof):
+    """Abre la ventana «Valoración» de la ficha de gestión (id=3_…) y devuelve la página. Solo lectura."""
+    ruta = f'Pantallas/Servicios/VerServicio.aspx?id=3_{n}_{prof}'
+    html = p.pedir(ruta)
+    if pide_login(html):
+        return html
+    b = None
+    for m in re.finditer(r'<input\b[^>]*>', html, re.I):
+        if re.search(r'\bid="[^"]*BtnOpcValoracionServ"', m.group(0)):
+            b = m.group(0)
+            break
+    if not b:
+        raise Fallo('La ficha no tiene el botón Valoración')
+    f = formulario(html)
+    f['__EVENTTARGET'] = ''
+    f['__EVENTARGUMENT'] = ''
+    f[htmlmod.unescape(re.search(r'\bname="([^"]*)"', b).group(1))] = htmlmod.unescape(
+        (re.search(r'\bvalue="([^"]*)"', b) or [None, 'Valoración'])[1])
+    return p.pedir(ruta, f)
+
+
 def ligero(html):
     """Quita lo que KUBEL no necesita (estado ASP.NET y scripts) para mandar menos datos."""
     html = re.sub(r'<input[^>]*name="__(VIEWSTATE|EVENTVALIDATION)[^"]*"[^>]*>', '', html, flags=re.I)
@@ -258,8 +301,33 @@ def main():
         if tanda:
             enviadas += a_kubel({'lector': VERSION, 'ronda': 2, 'lectura': r.get('lectura'),
                                  'segundos': seg(), 'fichas': tanda}).get('fichas', 0)
+        # Valoraciones (importe para Facturación), en tandas de 4 (páginas grandes)
+        vals, nval = {}, 0
+        for n in r.get('valorar') or []:
+            if time.time() - inicio > TOPE:
+                print('Tope de tiempo: quedan valoraciones para la próxima pasada')
+                break
+            try:
+                html = valoracion(p, n, prof)
+                if pide_login(html) and not renovada:
+                    prof = entrar(p, usuario, clave)
+                    renovada = True
+                    print('Sesión de ONRED renovada para las valoraciones')
+                    html = valoracion(p, n, prof)
+                if pide_login(html):
+                    raise Fallo('ONRED no deja ver la Valoración de este servicio')
+                vals[n] = ligero(html)
+            except Fallo as e:
+                vals[n] = {'error': str(e)}
+            if len(vals) >= 4:
+                nval += a_kubel({'lector': VERSION, 'ronda': 2, 'lectura': r.get('lectura'), 'segundos': seg(),
+                                 'valoraciones': vals}).get('valorados') or 0
+                vals = {}
+        if vals:
+            nval += a_kubel({'lector': VERSION, 'ronda': 2, 'lectura': r.get('lectura'), 'segundos': seg(),
+                             'valoraciones': vals}).get('valorados') or 0
         p.guardar()
-        print(f'Fichas guardadas en KUBEL: {enviadas}. Pasada terminada en {seg()} s.')
+        print(f'Fichas guardadas en KUBEL: {enviadas}. Valoraciones con cambios: {nval}. Pasada terminada en {seg()} s.')
         return 0
     except Exception as e:  # noqa: BLE001 — cualquier fallo se apunta en KUBEL
         msg = str(e) if isinstance(e, Fallo) else f'{type(e).__name__}: {e}'
