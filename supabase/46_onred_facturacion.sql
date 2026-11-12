@@ -29,6 +29,9 @@ begin
 end $$;
 
 -- ───────────── Parte 2: columnas ─────────────
+alter table public.facturacion drop constraint if exists facturacion_importe_origen_check,
+  add constraint facturacion_importe_origen_check check (importe_origen = any (array['presupuesto','manual','excel','factura','tasho','onred']));
+
 alter table public.onred_servicios
   add column if not exists valoracion jsonb,           -- {siniestro, servicios:[{numero, profesion, estado, pend, acep, rech, total}], partidas:[…], totales}
   add column if not exists valoracion_en timestamptz,
