@@ -3,8 +3,8 @@
 -- en un Excel por cuenta (VLL / PAL) antes del día 20; él las mete en la facturación siguiente.
 -- Periodo de un envío = del 20 del mes anterior al 19 del mes del envío (periodo '2026-12' = 20/11–19/12).
 -- Reglas (todo automático, solo SIGMA, compañía 1):
---   · URGENCIA: servicio urgente que pasa a «cerrado». Día de visita = primera visita HECHA (null si no hay;
---     el admin la puede poner a mano). Periodo según la fecha de cierre de SIGMA.
+--   · URGENCIA: servicio urgente que pasa a «cerrado». Día de visita = primera visita HECHA (si no hay, el día 1
+--     del mes del cierre; el admin lo puede cambiar a mano). Periodo según la fecha de cierre de SIGMA.
 --     Si se reabre o deja de ser urgente → la línea se quita (salvo enviada al delegado o con fecha a mano).
 --   · VISITA FALLIDA: visita que el operario marca «No se pudo realizar» (asignaciones.estado = 'no_realizado').
 --     Día de visita = la fecha de esa visita; periodo según ese día. Si la visita cambia de estado o se borra → se quita
@@ -86,9 +86,11 @@ begin
    where a.parte_id = p.id and a.estado = 'hecho'
    order by a.fecha, a.hora nulls last limit 1;
   v_cierre := coalesce(public.fecha_cierre_sigma(p.sigma_ficha), (now() at time zone 'Europe/Madrid')::date);
+  -- Sin visita hecha en KUBEL → día 1 del mes del cierre (decisión del usuario 12/11)
   insert into public.eventos_sigma as e (tipo, parte_id, servicio, cuenta, direccion, poblacion, operario, fecha_visita, fecha_ref, aviso)
-  values ('URGENCIA', p.id, p.numero_servicio, p.sigma_cuenta, p.direccion, p.poblacion, v_op, v_primera, v_cierre,
-          case when v_primera is null then 'SIN VISITA HECHA EN KUBEL' end)
+  values ('URGENCIA', p.id, p.numero_servicio, p.sigma_cuenta, p.direccion, p.poblacion, v_op,
+          coalesce(v_primera, date_trunc('month', v_cierre)::date), v_cierre,
+          case when v_primera is null then 'SIN VISITA EN KUBEL: DÍA 1 DEL MES' end)
   on conflict (parte_id) where tipo = 'URGENCIA' and parte_id is not null do update set
     servicio = excluded.servicio, cuenta = excluded.cuenta, direccion = excluded.direccion, poblacion = excluded.poblacion,
     operario = case when e.fecha_manual then e.operario else excluded.operario end,

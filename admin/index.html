@@ -374,7 +374,7 @@
     <div id="ev-plazo" class="nota ev-plazo"></div>
     <div id="ev-kpis" class="kpis"></div>
     <div id="ev-lista"><p class="suave">Cargando…</p></div>
-    <p class="nota-est">Se apuntan solos: cada servicio <b>urgente de SIGMA que se cierra</b> (día de visita = primera visita hecha; periodo por la fecha de cierre)
+    <p class="nota-est">Se apuntan solos: cada servicio <b>urgente de SIGMA que se cierra</b> (día de visita = primera visita hecha, o el día 1 del mes si no hay ninguna en KUBEL; periodo por la fecha de cierre)
       y cada visita de SIGMA que el operario marca <b>«No se pudo realizar»</b> (periodo por el día de esa visita).
       Periodo de envío = del 20 del mes anterior al 19; se manda al delegado antes del 20. Si el servicio se reabre o la visita cambia, la línea se quita sola (salvo si ya está enviada o tiene el día puesto a mano).</p>
   </main>
@@ -1501,7 +1501,7 @@ function pintarEv() {
       <td><b>${esc(x.servicio || '—')}</b></td>
       <td>${esc(x.cuenta || '—')}</td>
       <td><input type="date" class="evf" value="${esc(x.fecha_visita || '')}" onchange="guardarEv('${x.id}', 'fecha_visita', this)" title="${x.fecha_manual ? 'Puesto a mano (la BD ya no lo cambia)' : 'Automático'}">${x.fecha_manual ? ' ✎' : ''}
-        ${x.aviso && !x.fecha_visita ? `<br><span class="chip av">${esc(x.aviso)}</span>` : ''}</td>
+        ${x.aviso && !x.fecha_manual ? `<br><span class="chip av">${esc(x.aviso)}</span>` : ''}</td>
       <td style="white-space:normal;min-width:180px">${esc(x.direccion || '')}</td>
       <td>${esc(x.poblacion || '')}</td>
       <td>${esc(x.operario || '—')}</td>
