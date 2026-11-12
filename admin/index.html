@@ -191,6 +191,10 @@
   .tabla-km input.kmm{width:80px;text-align:right}
   .tabla-km input.com{width:170px}
   .tabla-km tr.prev td{background:#F7F7F5;color:var(--suave)}
+  .tabla-km input.evf{width:135px}
+  .tabla-km tr.env td{color:var(--suave)}
+  .tabla-km tr.sinf td{background:#FFF8EC}
+  .ev-plazo{margin-bottom:12px}
   .tabla-km tr.corr td.kmc{text-decoration:line-through;color:var(--suave)}
   .tabla-km tr.tot td{font-weight:700;background:#FAFAF8}
   #km-fechas{display:flex;gap:6px;align-items:center}
@@ -231,6 +235,7 @@
       <a href="#gastos" data-p="gastos">Gastos</a>
       <a href="#estadisticas" data-p="estadisticas">Estadísticas</a>
       <a href="#kilometraje" data-p="kilometraje">Kilometraje</a>
+      <a href="#eventos" data-p="eventos">Eventos SIGMA</a>
     </nav>
     <span class="esp"></span>
   </header>
@@ -351,6 +356,28 @@
     <div id="km-lista"><p class="suave">Cargando…</p></div>
     <p class="nota-est" id="km-nota"></p>
   </main>
+  <main id="p-eventos" class="pagina ancha oculto">
+    <div class="barra">
+      <h2>Eventos SIGMA</h2>
+      <span class="esp"></span>
+      <button class="sec" onclick="modalEvento()">+ Añadir evento</button>
+      <button class="sec" onclick="excelEv('VLL')" title="Excel para el delegado de SIGMA VALLADOLID (periodo elegido)">⬇ Excel VLL</button>
+      <button class="sec" onclick="excelEv('PAL')" title="Excel para el delegado de SIGMA PALENCIA (periodo elegido)">⬇ Excel PAL</button>
+      <button onclick="marcarEnviadoEv(this)" title="Marca como mandados al delegado los eventos del periodo y cuenta elegidos">✓ Marcar enviado</button>
+    </div>
+    <div class="filtros">
+      <select id="ev-per" onchange="pintarEv()" title="Periodo de envío"></select>
+      <select id="ev-cta" onchange="pintarEv()" title="Cuenta"><option value="">VLL y PAL</option><option value="VLL">SIGMA VALLADOLID</option><option value="PAL">SIGMA PALENCIA</option></select>
+      <select id="ev-tipo" onchange="pintarEv()" title="Tipo"><option value="">Urgencias y visitas fallidas</option><option>URGENCIA</option><option>VISITA FALLIDA</option></select>
+      <select id="ev-env" onchange="pintarEv()" title="Envío"><option value="">Enviados y sin enviar</option><option value="no">Sin enviar</option><option value="si">Enviados</option></select>
+    </div>
+    <div id="ev-plazo" class="nota ev-plazo"></div>
+    <div id="ev-kpis" class="kpis"></div>
+    <div id="ev-lista"><p class="suave">Cargando…</p></div>
+    <p class="nota-est">Se apuntan solos: cada servicio <b>urgente de SIGMA que se cierra</b> (día de visita = primera visita hecha; periodo por la fecha de cierre)
+      y cada visita de SIGMA que el operario marca <b>«No se pudo realizar»</b> (periodo por el día de esa visita).
+      Periodo de envío = del 20 del mes anterior al 19; se manda al delegado antes del 20. Si el servicio se reabre o la visita cambia, la línea se quita sola (salvo si ya está enviada o tiene el día puesto a mano).</p>
+  </main>
 </div>
 
 <div id="modal"></div>
@@ -410,7 +437,7 @@ async function alCambiarSesion(s) {
   irA();
 }
 // ---------- Páginas (Usuarios · Facturación) ----------
-const PAGINAS = ['usuarios', 'facturacion', 'gastos', 'estadisticas', 'kilometraje'];
+const PAGINAS = ['usuarios', 'facturacion', 'gastos', 'estadisticas', 'kilometraje', 'eventos'];
 function irA() {
   const p = PAGINAS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'usuarios';
   PAGINAS.forEach((x) => $('#p-' + x).classList.toggle('oculto', x !== p));
@@ -419,6 +446,7 @@ function irA() {
   if (p === 'estadisticas') cargarEst(true);
   if (p === 'kilometraje') cargarKm(true);
   if (p === 'gastos') cargarGastos(true);
+  if (p === 'eventos') cargarEv(true);
 }
 window.addEventListener('hashchange', () => { if (yoId) irA(); });
 async function llamar(cuerpo) {
@@ -1383,6 +1411,199 @@ async function excelKm() {
     ws['!cols'] = [11, 14, 8, 70, 12, 12, 10, 8, 11, 24].map((w) => ({ wch: w }));
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Kilometraje');
     XLSX.writeFile(wb, `KUBEL-kilometraje-${$('#km-mes').value || hoyISO()}.xlsx`);
+  } catch (e) { aviso('Error: ' + mensaje(e)); }
+}
+
+// =====================================================================
+//  EVENTOS SIGMA · 12/11/2026 (SQL 46)
+//  SIGMA paga aparte las URGENCIAS y las VISITAS FALLIDAS («eventos»). Se mandan al delegado de zona en un Excel
+//  por cuenta (VLL / PAL) antes del día 20. Periodo 'AAAA-MM' = del 20 del mes anterior al 19 de ese mes.
+//  La tabla eventos_sigma la rellena la BD sola (urgente que se cierra; visita «No se pudo realizar»).
+// =====================================================================
+let evFilas = [], evCargado = false, canalEv = null;
+const CTA_EV = { VLL: 'SIGMA VALLADOLID', PAL: 'SIGMA PALENCIA' };
+function evPeriodoDe(f) {   // igual que public.evento_periodo
+  if (!f) return '';
+  const [y, m, d] = f.split('-').map(Number);
+  if (d < 20) return f.slice(0, 7);
+  return m === 12 ? `${y + 1}-01` : `${y}-${dosD(m + 1)}`;
+}
+function evRango(k) {       // { desde, hasta, limite } en ISO
+  const [y, m] = k.split('-').map(Number);
+  const py = m === 1 ? y - 1 : y, pm = m === 1 ? 12 : m - 1;
+  return { desde: `${py}-${dosD(pm)}-20`, hasta: `${k}-19`, limite: `${k}-20` };
+}
+const evFechaL = (f) => f ? f.slice(8, 10) + '/' + f.slice(5, 7) + '/' + f.slice(0, 4) : '';
+
+async function cargarEv(forzar) {
+  if (evCargado && !forzar) return pintarEv();
+  const { data, error } = await sb.from('eventos_sigma').select('*').order('fecha_ref', { ascending: false }).limit(10000);
+  if (error) { $('#ev-lista').innerHTML = `<p class="error">No se pudo cargar: ${esc(mensaje(error))}</p>`; return; }
+  evFilas = data; evCargado = true;
+  if (!$('#ev-per').dataset.ini) { $('#ev-per').dataset.ini = 1; $('#ev-per').value = evPeriodoDe(hoyISO()); $('#ev-per').dataset.v = evPeriodoDe(hoyISO()); }
+  pintarEv();
+  if (!canalEv) {
+    canalEv = sb.channel('admin-eventos').on('postgres_changes', { event: '*', schema: 'public', table: 'eventos_sigma' }, (ev) => {
+      if (ev.eventType === 'DELETE') evFilas = evFilas.filter((x) => x.id !== ev.old.id);
+      else { const i = evFilas.findIndex((x) => x.id === ev.new.id); if (i >= 0) evFilas[i] = ev.new; else evFilas.unshift(ev.new); }
+      if (!$('#p-eventos').classList.contains('oculto') && !document.activeElement?.closest?.('#ev-lista')) pintarEv();
+    }).subscribe();
+  }
+}
+
+function filtroEv(salvo) {
+  const per = $('#ev-per').value, cta = $('#ev-cta').value, tipo = $('#ev-tipo').value, env = $('#ev-env').value;
+  return (x) => (!per || x.periodo === per) && (salvo === 'cta' || !cta || x.cuenta === cta) && (!tipo || x.tipo === tipo)
+    && (!env || (env === 'si') === !!x.enviado_en);
+}
+
+function pintarEv() {
+  if (!evCargado) return;
+  const hoy = hoyISO(), actual = evPeriodoDe(hoy);
+  // Periodos con datos (el actual siempre)
+  const pers = contar(evFilas, (x) => x.periodo || '');
+  if (!pers.has(actual)) pers.set(actual, 0);
+  pers.delete('');
+  const perV = $('#ev-per').dataset.v ?? $('#ev-per').value;
+  $('#ev-per').innerHTML = `<option value="">Todos los periodos</option>` + [...pers].sort((a, b) => b[0].localeCompare(a[0])).map(([k, n]) => {
+    const r = evRango(k);
+    return `<option value="${k}" ${k === perV ? 'selected' : ''}>${esc(nombreMes(k))} · ${fechaCorta(r.desde)}–${fechaCorta(r.hasta)} (${n})</option>`;
+  }).join('');
+  delete $('#ev-per').dataset.v;
+  const per = $('#ev-per').value;
+
+  // Plazo del envío
+  if (per) {
+    const r = evRango(per), dias = Math.round((new Date(r.limite + 'T00:00:00') - new Date(hoy + 'T00:00:00')) / 864e5);
+    const pend = evFilas.filter((x) => x.periodo === per && !x.enviado_en);
+    const ctas = ['VLL', 'PAL'].map((c) => { const n = pend.filter((x) => x.cuenta === c).length; return n ? `${CTA_EV[c]}: ${n} sin enviar` : `${CTA_EV[c]}: nada pendiente`; }).join(' · ');
+    $('#ev-plazo').innerHTML = `<b>${esc(nombreMes(per))}</b>: eventos del ${evFechaL(r.desde)} al ${evFechaL(r.hasta)} → mandar al delegado <b>antes del ${evFechaL(r.limite)}</b>`
+      + (dias > 0 ? ` (faltan ${dias} día${dias === 1 ? '' : 's'})` : dias === 0 ? ' (<b>hoy es el día 20</b>)' : ' (plazo pasado)') + `.<br>${ctas}`;
+    $('#ev-plazo').classList.remove('oculto');
+  } else $('#ev-plazo').classList.add('oculto');
+
+  const pasa = filtroEv();
+  const ver = evFilas.filter(pasa).sort((a, b) => (a.cuenta || '').localeCompare(b.cuenta || '') || (a.fecha_visita || a.fecha_ref || '').localeCompare(b.fecha_visita || b.fecha_ref || ''));
+  const n = (fn) => ver.filter(fn).length;
+  const sinF = n((x) => !x.fecha_visita);
+  $('#ev-kpis').innerHTML = `
+    <div class="kpi"><b>${n((x) => x.tipo === 'URGENCIA')}</b><span>Urgencias</span></div>
+    <div class="kpi"><b>${n((x) => x.tipo === 'VISITA FALLIDA')}</b><span>Visitas fallidas</span></div>
+    <div class="kpi"><b>${n((x) => x.cuenta === 'VLL')}</b><span>SIGMA Valladolid</span></div>
+    <div class="kpi"><b>${n((x) => x.cuenta === 'PAL')}</b><span>SIGMA Palencia</span></div>
+    <div class="kpi"><b>${n((x) => x.enviado_en)}</b><span>Enviados al delegado</span></div>
+    ${sinF ? `<div class="kpi aviso"><b>${sinF}</b><span>Sin día de visita</span><small>escríbelo a mano antes de mandar</small></div>` : ''}`;
+
+  $('#ev-lista').innerHTML = ver.length ? `<div class="tabla-km"><table><thead><tr>
+      <th>Evento</th><th>Servicio</th><th>Cuenta</th><th>Día de visita</th><th>Dirección</th><th>Población</th><th>Operario</th><th>Referencia</th><th>Comentario</th><th>Enviado</th><th></th></tr></thead><tbody>
+    ${ver.map((x) => `<tr data-k="${x.id}" class="${x.enviado_en ? 'env' : ''} ${!x.fecha_visita ? 'sinf' : ''}">
+      <td><span class="chip ${x.tipo === 'URGENCIA' ? 'mal' : 'av'}">${esc(x.tipo)}</span>${x.origen === 'manual' ? ' <span class="chip gr">a mano</span>' : ''}</td>
+      <td><b>${esc(x.servicio || '—')}</b></td>
+      <td>${esc(x.cuenta || '—')}</td>
+      <td><input type="date" class="evf" value="${esc(x.fecha_visita || '')}" onchange="guardarEv('${x.id}', 'fecha_visita', this)" title="${x.fecha_manual ? 'Puesto a mano (la BD ya no lo cambia)' : 'Automático'}">${x.fecha_manual ? ' ✎' : ''}
+        ${x.aviso && !x.fecha_visita ? `<br><span class="chip av">${esc(x.aviso)}</span>` : ''}</td>
+      <td style="white-space:normal;min-width:180px">${esc(x.direccion || '')}</td>
+      <td>${esc(x.poblacion || '')}</td>
+      <td>${esc(x.operario || '—')}</td>
+      <td class="suave">${x.tipo === 'URGENCIA' ? 'Cierre' : 'Visita'} ${fechaCorta(x.fecha_ref)}</td>
+      <td><input class="com" value="${esc(x.comentario || '')}" onchange="guardarEv('${x.id}', 'comentario', this)"></td>
+      <td>${x.enviado_en ? `<span class="chip ok" title="${esc(fecha(x.enviado_en))}">✓ ${fechaCorta(x.enviado_en.slice(0, 10))}</span> <button class="mini sec" onclick="enviadoEv('${x.id}', false)" title="Quitar la marca de enviado">↺</button>`
+        : `<button class="mini sec" onclick="enviadoEv('${x.id}', true)">Marcar</button>`}</td>
+      <td><button class="mini sec" onclick="borrarEv('${x.id}')" title="Borrar este evento">🗑</button></td></tr>`).join('')}
+    </tbody></table></div>` : '<p class="suave">Sin eventos con estos filtros.</p>';
+}
+
+async function guardarEv(id, campo, el) {
+  const v = el.value.trim() || null;
+  const { error } = await sb.from('eventos_sigma').update({ [campo]: v }).eq('id', id);
+  if (error) return aviso('No se pudo guardar: ' + mensaje(error));
+  const x = evFilas.find((f) => f.id === id); if (x) { x[campo] = v; if (campo === 'fecha_visita') x.fecha_manual = !!v; }
+  aviso('Guardado'); el.blur(); pintarEv();
+}
+
+async function enviadoEv(id, si) {
+  const v = si ? new Date().toISOString() : null;
+  const { error } = await sb.from('eventos_sigma').update({ enviado_en: v }).eq('id', id);
+  if (error) return aviso('No se pudo: ' + mensaje(error));
+  const x = evFilas.find((f) => f.id === id); if (x) x.enviado_en = v;
+  pintarEv();
+}
+
+async function marcarEnviadoEv(btn) {
+  const per = $('#ev-per').value, cta = $('#ev-cta').value;
+  if (!per) return aviso('Elige primero un periodo');
+  const ids = evFilas.filter((x) => x.periodo === per && (!cta || x.cuenta === cta) && !x.enviado_en).map((x) => x.id);
+  if (!ids.length) return aviso('No hay eventos sin enviar en ' + nombreMes(per) + (cta ? ' · ' + cta : ''));
+  if (!confirm(`¿Marcar como enviados al delegado ${ids.length} evento${ids.length === 1 ? '' : 's'} de ${nombreMes(per)}${cta ? ' (' + CTA_EV[cta] + ')' : ' (VLL y PAL)'}?`)) return;
+  btn.disabled = true;
+  const v = new Date().toISOString();
+  const { error } = await sb.from('eventos_sigma').update({ enviado_en: v }).in('id', ids);
+  btn.disabled = false;
+  if (error) return aviso('No se pudo: ' + mensaje(error));
+  evFilas.forEach((x) => { if (ids.includes(x.id)) x.enviado_en = v; });
+  aviso('Marcados como enviados'); pintarEv();
+}
+
+async function borrarEv(id) {
+  const x = evFilas.find((f) => f.id === id); if (!x) return;
+  if (!confirm(`¿Borrar el evento ${x.tipo} del servicio ${x.servicio || ''}?` + (x.origen === 'auto' ? '\n(Si el servicio o la visita vuelven a cambiar, KUBEL puede apuntarlo de nuevo.)' : ''))) return;
+  const { error } = await sb.from('eventos_sigma').delete().eq('id', id);
+  if (error) return aviso('No se pudo borrar: ' + mensaje(error));
+  evFilas = evFilas.filter((f) => f.id !== id); pintarEv();
+}
+
+function modalEvento() {
+  const per = $('#ev-per').value || evPeriodoDe(hoyISO());
+  abrirModal(`
+    <h3>Nuevo evento SIGMA</h3>
+    <div class="sub">Para un evento que KUBEL no haya apuntado solo. Va al periodo que elijas.</div>
+    <div class="dos"><div><label>Evento</label><select id="em-tipo"><option>URGENCIA</option><option>VISITA FALLIDA</option></select></div>
+      <div><label>Cuenta</label><select id="em-cta"><option value="VLL">SIGMA VALLADOLID</option><option value="PAL">SIGMA PALENCIA</option></select></div></div>
+    <div class="dos"><div><label>Nº servicio</label><input id="em-serv" inputmode="numeric"></div>
+      <div><label>Día de visita</label><input type="date" id="em-fecha" value="${hoyISO()}"></div></div>
+    <label>Dirección</label><input id="em-dir">
+    <div class="dos"><div><label>Población</label><input id="em-pob"></div>
+      <div><label>Periodo de envío</label><input type="month" id="em-per" value="${esc(per)}"></div></div>
+    <label>Comentario</label><input id="em-com">
+    <div id="m-error" class="error"></div>
+    <div class="acciones"><button id="em-btn" onclick="guardarEvento()">Añadir</button></div>`);
+  $('#em-cta').value = $('#ev-cta').value || 'VLL';
+  $('#em-serv').focus();
+}
+
+async function guardarEvento() {
+  const serv = $('#em-serv').value.trim(), f = $('#em-fecha').value || null, per = $('#em-per').value || evPeriodoDe(f || hoyISO());
+  if (!serv) { $('#m-error').textContent = 'Escribe el nº de servicio'; return; }
+  $('#em-btn').disabled = true;
+  const fila = { tipo: $('#em-tipo').value, cuenta: $('#em-cta').value, servicio: serv, fecha_visita: f, fecha_ref: f, periodo: per,
+    direccion: $('#em-dir').value.trim() || null, poblacion: $('#em-pob').value.trim() || null, comentario: $('#em-com').value.trim() || null, origen: 'manual', fecha_manual: !!f };
+  const { data, error } = await sb.from('eventos_sigma').insert(fila).select().single();
+  if (error) { $('#em-btn').disabled = false; $('#m-error').textContent = mensaje(error); return; }
+  if (!evFilas.some((x) => x.id === data.id)) evFilas.unshift(data);
+  cerrarModal(); aviso('Evento añadido'); pintarEv();
+}
+
+async function excelEv(cta) {
+  try {
+    const per = $('#ev-per').value;
+    if (!per) return aviso('Elige primero un periodo');
+    const filas = evFilas.filter((x) => x.periodo === per && x.cuenta === cta)
+      .sort((a, b) => a.tipo.localeCompare(b.tipo) === 0 ? (a.fecha_visita || '').localeCompare(b.fecha_visita || '') : (a.tipo === 'URGENCIA' ? -1 : 1));
+    if (!filas.length) return aviso(`No hay eventos de ${CTA_EV[cta]} en ${nombreMes(per)}`);
+    const sinF = filas.filter((x) => !x.fecha_visita).length;
+    if (sinF && !confirm(`${sinF} evento${sinF === 1 ? '' : 's'} sin día de visita. ¿Descargar el Excel igualmente?`)) return;
+    if (!window.XLSX) await cargarScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
+    const r = evRango(per);
+    const cab = ['Nº SERVICIO', 'EVENTO', 'DÍA DE VISITA', 'DIRECCIÓN', 'POBLACIÓN'];
+    const datos = filas.map((x) => [x.servicio || '', x.tipo, x.fecha_visita ? new Date(x.fecha_visita + 'T00:00:00') : '', x.direccion || '', x.poblacion || '']);
+    const nU = filas.filter((x) => x.tipo === 'URGENCIA').length, nF = filas.length - nU;
+    const aoa = [[`KUBEL DISEÑO, SL · ${CTA_EV[cta]} · Eventos del ${evFechaL(r.desde)} al ${evFechaL(r.hasta)}`], [], cab, ...datos, [],
+      ['URGENCIAS', nU], ['VISITAS FALLIDAS', nF], ['TOTAL EVENTOS', filas.length]];
+    const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true, dateNF: 'dd/mm/yyyy' });
+    ws['!cols'] = [14, 17, 14, 42, 22].map((w) => ({ wch: w }));
+    const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Eventos');
+    XLSX.writeFile(wb, `KUBEL-eventos-${CTA_EV[cta].replace(' ', '-')}-${per}.xlsx`);
+    aviso('Excel descargado. Cuando lo mandes, pulsa «✓ Marcar enviado».');
   } catch (e) { aviso('Error: ' + mensaje(e)); }
 }
 
