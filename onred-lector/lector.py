@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = 'lector-6'  # v6: si ONRED cierra la sesión en una Valoración, entra de nuevo (hasta 3 veces) y sigue con las demás. v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
+VERSION = 'lector-7'  # v7: entrar = sesión NUEVA (borra las cookies: tras abrir una Valoración, ONRED deja la sesión del servidor inservible para las fichas y volver a entrar con la misma no basta); tras las valoraciones no se guarda la sesión. v6: si ONRED cierra la sesión en una Valoración, entra de nuevo (hasta 3 veces) y sigue con las demás. v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
 BASE = os.environ.get('ONRED_BASE', 'https://www.funcionareparaciones.es/cronosp/')  # ONRED_BASE: solo pruebas
 KUBEL_URL_DEF = 'https://hytmotuhdxbzpustnlzx.supabase.co/functions/v1/onred-recibir'
 COOKIES = os.environ.get('ONRED_COOKIES', '/var/lib/kubel-onred/cookies.txt')
@@ -153,6 +153,7 @@ def campos(html):
 
 
 def entrar(p, usuario, clave):
+    p.jar.clear()  # sesión nueva en el servidor de ONRED (la vieja puede haber quedado inservible)
     html = p.pedir('Login.aspx')
     f = campos(html)
     f['__EVENTTARGET'] = ''
@@ -329,6 +330,8 @@ def main():
         if vals:
             nval += a_kubel({'lector': VERSION, 'ronda': 2, 'lectura': r.get('lectura'), 'segundos': seg(),
                              'valoraciones': vals}).get('valorados') or 0
+        if r.get('valorar'):
+            p.jar.clear()  # tras abrir valoraciones la sesión no vale para las fichas: la próxima pasada entra de nuevo
         p.guardar()
         print(f'Fichas guardadas en KUBEL: {enviadas}. Valoraciones con cambios: {nval}. Pasada terminada en {seg()} s.')
         return 0
