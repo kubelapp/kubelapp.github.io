@@ -714,7 +714,7 @@ function modalLinea(id) {
   const cias = [...new Set([...CIAS_FAC, ...filas.map((f) => f.compania).filter(Boolean)])];
   abrirModal(`
     <h3>${id ? 'Servicio ' + esc(x.servicio) : 'Nueva línea'}</h3>
-    ${id ? `<div class="sub">${x.origen === 'auto' ? (x.compania && x.compania !== 'SIGMA' ? 'Entró sola al cerrarse en KUBEL' : 'Entró sola al cerrarse en SIGMA') : x.origen === 'excel' ? 'Del Excel antiguo' : x.origen === 'factura' ? 'Añadida desde una factura' : 'Añadida a mano'}${x.liquidado_en ? ' · liquidado el ' + fecha(x.liquidado_en) : ''}${x.cerrado_por ? ` · cerrado por <b>${esc(x.cerrado_por)}</b>${x.cerrado_en ? ' el ' + fecha(x.cerrado_en) : ''}` : ''}</div>` : ''}
+    ${id ? `<div class="sub">${x.origen === 'auto' ? (x.compania && x.compania !== 'SIGMA' ? 'Entró sola al cerrarse en KUBEL' : 'Entró sola al cerrarse en SIGMA') : x.origen === 'excel' ? 'Del Excel antiguo' : x.origen === 'factura' ? 'Añadida desde una factura' : x.origen === 'tasho' ? 'Entró sola desde «Trabajos realizados» de TASHO' : 'Añadida a mano'}${x.importe_nota ? ' · ' + esc(x.importe_nota) : ''}${x.tasho_liquidado_en ? ' · liquidado por TASHO («facturado»)' : ''}${x.liquidado_en ? ' · liquidado el ' + fecha(x.liquidado_en) : ''}${x.cerrado_por ? ` · cerrado por <b>${esc(x.cerrado_por)}</b>${x.cerrado_en ? ' el ' + fecha(x.cerrado_en) : ''}` : ''}</div>` : ''}
     <div class="dos"><div><label>Fecha</label><input type="date" id="l-fecha" value="${esc(x.fecha || '')}"></div>
       <div><label>Servicio</label><input id="l-serv" value="${esc(x.servicio || '')}"></div></div>
     <label>Dirección</label><input id="l-dir" value="${esc(x.direccion || '')}">

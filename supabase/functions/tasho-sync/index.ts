@@ -1,8 +1,9 @@
 // KUBEL — Robot del portal TASHO (S.I.C.I., tasho.sistemasici.es).
-// v1.1 (11/11/2026). SOLO LECTURA en TASHO: nunca graba, envía ni confirma nada en el portal.
+// v1.2 (12/11/2026; v1.1 del 11/11). SOLO LECTURA en TASHO: nunca graba, envía ni confirma nada en el portal.
 // Entra con TASHO_USUARIO / TASHO_CLAVE y vuelca en `partes` (compañía 3, origen 'tasho'):
 //   · «No informados» (buscador, estado_cita = N) y «Pendiente cita» → servicios abiertos.
-//   · «Trabajos realizados» (últimos 120 días) → importe sin IVA por expediente (tasho_importe → Facturación).
+//   · «Trabajos realizados» (últimos 120 días; ?dias=N para más) → tasho_trabajos (SQL 45) → privado.tasho_volcar_facturacion():
+//     importe de cada línea TASHO de Facturación, líneas nuevas desde el 01/08/2026 y «facturado» → LIQUIDADO.
 //   · Nº del servicio = nº de expediente de la compañía final; un expediente puede tener varios partes.
 //   · Adopta los servicios de TASHO dados de alta a mano (nº = Id Exp. o nº de Parte) en vez de duplicarlos.
 //   · Cierre: un servicio abierto que ya no sale y aparece INFORMADO (buscador estado V o en Trabajos realizados)
@@ -46,6 +47,7 @@ const ddmmaa = (s: string) => {
   return `${a}-${m[2]}-${m[1]} ${m[4] ? m[4].padStart(2, '0') + ':' + m[5] : '00:00'}`;
 };
 const hoyMadrid = () => new Date(new Date().toLocaleString('en-US', { timeZone: 'Europe/Madrid' }));
+const fmtIso = (d: Date) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 const fmt = (d: Date) => `${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
 const num = (s: string) => { const v = Number(s.replace(/[€\s]/g, '').replace(/\./g, '').replace(',', '.')); return Number.isFinite(v) ? v : null; };
 
@@ -170,16 +172,17 @@ function leerCitas(html: string, lista: Item['lista']): Item[] {
 }
 
 // ───────────────────────── «Trabajos realizados» ─────────────────────────
-type Trabajo = { idExp: string; expediente: string; fecha: string | null; precio: number | null; cantidad: number | null; total: number | null; texto: string; facturado: boolean };
+type Trabajo = { idExp: string; expediente: string; prefijo: string | null; empresa: string | null; fecha: string | null; precio: number | null; cantidad: number | null; total: number | null; texto: string; facturado: boolean };
 function leerTrabajos(html: string, facturado: boolean): Trabajo[] {
   const out: Trabajo[] = [];
   const marcas = [...html.matchAll(/<td colspan="7" class="text-center table-dark">([^<]*)<\/td>/g)].map((m) => ({ pos: m.index!, fecha: linea(m[1]) }));
-  const rx = /<tr>\s*<td class="titulosDatosCita[^"]*">\s*(\d+)\s*<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>[\s\S]*?<\/td>\s*<td[^>]*>[\s\S]*?<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<\/tr>\s*<tr>\s*<td colspan="2"[^>]*>[\s\S]*?<\/td>\s*<td colspan="5"[^>]*>([\s\S]*?)<\/td>/g;
+  const rx = /<tr>\s*<td class="titulosDatosCita[^"]*">\s*(\d+)\s*<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>[\s\S]*?<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<td[^>]*>([\s\S]*?)<\/td>\s*<\/tr>\s*<tr>\s*<td colspan="2"[^>]*>[\s\S]*?<\/td>\s*<td colspan="5"[^>]*>([\s\S]*?)<\/td>/g;
   for (const m of html.matchAll(rx)) {
     const f = marcas.filter((x) => x.pos < m.index!).pop();
     out.push({
-      idExp: m[1], expediente: linea(m[2]).replace(/^[A-Z]{1,4}\s+/, ''), fecha: f?.fecha ?? null,
-      precio: num(linea(m[3])), cantidad: Number(linea(m[4])) || null, total: num(linea(m[5])), texto: texto(m[6]), facturado,
+      idExp: m[1], expediente: linea(m[2]).replace(/^[A-Z]{1,4}\s+/, ''), prefijo: (linea(m[2]).match(/^([A-Z]{1,4})\s+/) || [])[1] ?? null,
+      empresa: linea(m[3]) || null, fecha: f?.fecha ?? null,
+      precio: num(linea(m[4])), cantidad: Number(linea(m[5])) || null, total: num(linea(m[6])), texto: texto(m[7]), facturado,
     });
   }
   return out;
@@ -240,22 +243,24 @@ function agrupar(items: Item[]): Servicio[] {
 }
 
 // ───────────────────────── lectura completa ─────────────────────────
-async function leerTodo(ses: Sesion) {
+async function leerTodo(ses: Sesion, dias = 120) {
   await ses.xajax('buscadorV2', []);
   const n = await ses.xajax('buscarV2', ses.formBuscador({ estado_cita: 'N' }), true);
   const noInf = leerCitas(n.html, 'no_informado');
   const total = (n.trozos.find((t) => t.id === 'totalResultados')?.html.match(/(\d+)/) || [])[1];
   const pc = await ses.xajax('listarPartesCitadosV2', { fecha: '', fecha2: '', idParte: '', aplicacion: 'confirmarCita' });
   const pend = leerCitas(pc.html, 'pendiente_cita');
-  // Trabajos realizados de los últimos 120 días (facturados y no facturados)
-  const hasta = hoyMadrid(); const desde = new Date(hasta.getTime() - 120 * 86400_000);
-  const trabajos: Trabajo[] = [];
+  // Trabajos realizados de los últimos 120 días (facturados y no facturados; `?dias=N` para una carga mayor)
+  const hasta = hoyMadrid(); const desde = new Date(hasta.getTime() - dias * 86400_000);
+  const trabajos: Trabajo[] = []; const totalesPortal: Record<string, number | null> = {};
   await ses.xajax('cargarTrabajosRealizadosV2', []);
   for (const fac of ['noFacturado', 'facturado']) {
     const t = await ses.xajax('buscarTrabajosRealizadosV2', { id_operario: ses.idOperario, ultimaAperturaBuscador: '', empresa: 'todas', fechaDesde: fmt(desde), fechaHasta: fmt(hasta), facturado: fac, realizados: 'none' }, true);
     trabajos.push(...leerTrabajos(t.html, fac === 'facturado'));
+    const tot = texto(t.html).match(/TOTAL:\s*([\d.,]+)\s*€/);
+    totalesPortal[fac] = tot ? Number(tot[1]) : null;
   }
-  return { noInf, pend, trabajos, bytesN: n.bytes, totalN: total ? Number(total) : null, bytesPend: pc.bytes };
+  return { noInf, pend, trabajos, totalesPortal, trabajosDesde: desde, trabajosHasta: hasta, bytesN: n.bytes, totalN: total ? Number(total) : null, bytesPend: pc.bytes };
 }
 
 // Comprueba si un expediente desaparecido está informado (buscador estado V por Id Exp.)
@@ -346,11 +351,40 @@ async function volcar(ses: Sesion, lect: Awaited<ReturnType<typeof leerTodo>>, i
       const lineas = ts.map((t) => ({ fecha: t.fecha, texto: t.texto, precio: t.precio, cantidad: t.cantidad, total: t.total, facturado: t.facturado }));
       const r = await sql`
         update public.partes set tasho_importe = ${total}, tasho_trabajos = ${sql.json(lineas)}
-         where compania_id = ${COMPANIA} and origen = 'tasho' and (tasho_id_exp = ${idExp} or numero_servicio = ${ts[0].expediente})
+         where compania_id = ${COMPANIA} and (tasho_id_exp = ${idExp} or numero_servicio in (${ts[0].expediente}, ${idExp}))
            and (tasho_importe is distinct from ${total} or tasho_trabajos is null or tasho_trabajos <> ${sql.json(lineas)}::jsonb)`;
       importes += r.count;
     }
     resumen.importes_actualizados = importes;
+
+    // (12/11, SQL 45) «Trabajos realizados» tal cual → tasho_trabajos → Facturación del panel admin
+    try {
+      const iso = (f: string | null) => { const m = f?.match(/^(\d\d)-(\d\d)-(\d{4})$/); return m ? `${m[3]}-${m[2]}-${m[1]}` : null; };
+      const filas = lect.trabajos.map((t) => ({ id_exp: t.idExp, expediente: t.expediente || null, prefijo: t.prefijo, empresa: t.empresa,
+        fecha: iso(t.fecha), texto: t.texto, precio: t.precio, cantidad: t.cantidad, total: t.total, facturado: t.facturado }));
+      const marca = new Date();
+      if (filas.length) {
+        await sql`
+          insert into public.tasho_trabajos (clave, id_exp, expediente, prefijo, empresa, fecha, texto, precio, cantidad, total, facturado, visto_en)
+          select md5(concat_ws('|', x.id_exp, x.expediente, x.fecha, x.texto, x.precio, x.cantidad, x.total,
+                       row_number() over (partition by x.id_exp, x.expediente, x.fecha, x.texto, x.precio, x.cantidad, x.total))),
+                 x.id_exp, x.expediente, x.prefijo, x.empresa, x.fecha, x.texto, x.precio, x.cantidad, x.total, x.facturado, ${marca}
+            from jsonb_to_recordset(${sql.json(filas)}::jsonb) as x(id_exp text, expediente text, prefijo text, empresa text, fecha date,
+                 texto text, precio numeric, cantidad numeric, total numeric, facturado boolean)
+          on conflict (clave) do update set facturado = excluded.facturado, empresa = coalesce(excluded.empresa, tasho_trabajos.empresa), visto_en = excluded.visto_en`;
+      }
+      // Lo que ya no sale en el periodo leído se borra, solo si la lectura cuadra con el TOTAL del portal
+      const suma = (f: boolean) => Math.round(lect.trabajos.filter((t) => t.facturado === f).reduce((a, t) => a + (t.total ?? 0), 0) * 100) / 100;
+      const cuadra = (['noFacturado', 'facturado'] as const).every((k) => lect.totalesPortal[k] != null && Math.abs(suma(k === 'facturado') - lect.totalesPortal[k]!) < 0.05);
+      resumen.trabajos_total_portal = lect.totalesPortal;
+      resumen.trabajos_total_leido = { noFacturado: suma(false), facturado: suma(true) };
+      if (cuadra) {
+        const r = await sql`delete from public.tasho_trabajos where fecha between ${fmtIso(lect.trabajosDesde)} and ${fmtIso(lect.trabajosHasta)} and visto_en < ${marca}`;
+        resumen.trabajos_retirados = r.count;
+      } else avisos.push('Trabajos realizados: lo leído no cuadra con el TOTAL del portal; no se retira ninguna línea');
+      const [v] = await sql`select privado.tasho_volcar_facturacion() as r`;
+      resumen.facturacion = v.r;
+    } catch (e) { avisos.push('Facturación TASHO: ' + (e as Error).message); }
 
     // Cierres: abiertos de TASHO que no han salido en esta pasada
     const fiable = lect.noInf.length > 0 && lect.bytesN > 2000 && (lect.totalN == null || lect.totalN === lect.noInf.length);
@@ -421,12 +455,13 @@ Deno.serve(async (req) => {
       const d = Number(q.get('desde') || 0);
       return json({ ok: true, fn, bytes: r.bytes, texto: texto(r.html).slice(0, Number(q.get('max') || 4000)), html: q.get('html') === '1' ? r.html.slice(d, d + 20000) : undefined });
     }
-    const lect = await leerTodo(ses);
+    const lect = await leerTodo(ses, Math.min(Math.max(Number(q.get('dias') || 120), 7), 400));
     if (q.get('prueba') === '1') {
       const servicios = agrupar([...lect.noInf, ...lect.pend]);
       return json({ ok: true, prueba: true, totalN: lect.totalN, leidosN: lect.noInf.length, leidosPend: lect.pend.length, trabajos: lect.trabajos.length,
         servicios: servicios.map((x) => ({ ...x, mensajes: x.mensajes.length, ultimo_mensaje: x.mensajes[0], datos: undefined })).slice(0, Number(q.get('n') || 60)),
-        trabajos_ej: lect.trabajos.slice(0, 5), segundos: Math.round((Date.now() - inicio) / 1000) });
+        trabajos_ej: lect.trabajos.slice(0, 5), trabajos_total_portal: lect.totalesPortal,
+        trabajos_total_leido: { noFacturado: lect.trabajos.filter((t) => !t.facturado).reduce((a, t) => a + (t.total ?? 0), 0), facturado: lect.trabajos.filter((t) => t.facturado).reduce((a, t) => a + (t.total ?? 0), 0) }, segundos: Math.round((Date.now() - inicio) / 1000) });
     }
     const resumen = await volcar(ses, lect, inicio);
     resumen.segundos = Math.round((Date.now() - inicio) / 1000);
