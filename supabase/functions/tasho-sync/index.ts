@@ -1,5 +1,5 @@
 // KUBEL — Robot del portal TASHO (S.I.C.I., tasho.sistemasici.es).
-// v1.3 (12/11/2026; v1.1 del 11/11). SOLO LECTURA en TASHO: nunca graba, envía ni confirma nada en el portal.
+// v1.4 (12/11/2026; v1.1 del 11/11). TASHO también pasa servicios de OnRed: ver «adoptar». SOLO LECTURA en TASHO: nunca graba, envía ni confirma nada en el portal.
 // Entra con TASHO_USUARIO / TASHO_CLAVE y vuelca en `partes` (compañía 3, origen 'tasho'):
 //   · «No informados» (buscador, estado_cita = N) y «Pendiente cita» → servicios abiertos.
 //   · «Trabajos realizados» (últimos 120 días; ?dias=N para más) → tasho_trabajos (SQL 45) → privado.tasho_volcar_facturacion():
@@ -282,12 +282,16 @@ async function volcar(ses: Sesion, lect: Awaited<ReturnType<typeof leerTodo>>, i
     for (const s of servicios) {
       // ¿ya existe? por nº de expediente, por Id Exp. o (alta manual) por nº de Id Exp. / Parte
       const cand = [s.numero, s.idExp, ...s.numerosParte].filter(Boolean);
+      // (12/11, v1.4) TASHO también pasa servicios de OnRed (nº de 7 cifras como los de nuestra cuenta de ONRED):
+      // un alta manual con la compañía OnRed que el lector de ONRED no conoce y que TASHO trae → es de TASHO y se adopta
       const filas = await sql`
-        select id, numero_servicio, origen, estado, tasho_cierre
+        select id, numero_servicio, origen, estado, tasho_cierre, compania_id
           from public.partes
-         where compania_id = ${COMPANIA}
-           and (numero_servicio = any(${cand}) or (tasho_id_exp is not null and tasho_id_exp = ${s.idExp || '-'}))
-         order by (numero_servicio = ${s.numero}) desc, (origen = 'tasho') desc, creado_en`;
+         where (compania_id = ${COMPANIA}
+                and (numero_servicio = any(${cand}) or (tasho_id_exp is not null and tasho_id_exp = ${s.idExp || '-'})))
+            or (compania_id = 4 and origen = 'manual' and numero_servicio = ${s.numero}
+                and not exists (select 1 from public.onred_servicios o where o.numero = partes.numero_servicio))
+         order by (compania_id = ${COMPANIA}) desc, (numero_servicio = ${s.numero}) desc, (origen = 'tasho') desc, creado_en`;
       const tels = s.telefonos;
       const t1 = s.perjudicado ? null : tels[0] ?? null, t2 = s.perjudicado ? null : tels[1] ?? null;
       const p1 = s.perjudicado ? tels[0] ?? null : null, p2 = s.perjudicado ? tels[1] ?? null : null;
@@ -323,7 +327,7 @@ async function volcar(ses: Sesion, lect: Awaited<ReturnType<typeof leerTodo>>, i
       const [d] = await sql`
         update public.partes set ${sql(comunes)},
           tasho_cita = ${s.cita}::timestamp at time zone 'Europe/Madrid',
-          origen = 'tasho',
+          origen = 'tasho', compania_id = ${COMPANIA},
           numero_servicio = ${cambiarNumero ? s.numero : f.numero_servicio},
           asegurado = coalesce(asegurado, ${s.asegurado}),
           poblacion = coalesce(poblacion, ${s.poblacion}),
@@ -340,6 +344,10 @@ async function volcar(ses: Sesion, lect: Awaited<ReturnType<typeof leerTodo>>, i
         where id = ${f.id}
         returning descripcion`;
       await sql`update public.partes set tasho_datos = ${sql.json({ ...s.datos, _desc: d?.descripcion ?? null })} where id = ${f.id}`;
+      if (f.compania_id !== COMPANIA) {   // estaba dado de alta como ONRED: su línea de Facturación pasa a TASHO
+        await sql`update public.facturacion set compania = 'TASHO' where parte_id = ${f.id} and not liquidado`;
+        avisos.push(`${s.numero}: estaba como ONRED y es un OnRed que llega por TASHO → pasado a TASHO`);
+      }
       if (adoptar) adoptados.push(`${f.numero_servicio} → ${cambiarNumero ? s.numero : f.numero_servicio}`);
       if (reabrir) reabiertos.push(s.numero);
     }
