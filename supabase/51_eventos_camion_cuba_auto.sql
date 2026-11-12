@@ -1,4 +1,4 @@
--- 50 · Eventos SIGMA: DESATASCO CAMIÓN CUBA automático (12/11/2026)
+-- 51 · Eventos SIGMA: DESATASCO CAMIÓN CUBA automático (12/11/2026)
 -- Regla del usuario: el camión cuba con SIGMA va por el gremio 22A; se apunta un evento cada vez que en un 22A se
 -- factura el baremo F45. KUBEL lo ve en el presupuesto que lee el robot sigma-presupuestos (partes.sigma_ptto_lineas):
 --   · servicio SIGMA (compañía 1), sigma_gremio = '22A' y una partida F45 ACEPTADA → una línea por servicio.

@@ -1563,7 +1563,7 @@ async function excelKm() {
 // =====================================================================
 let evFilas = [], evCargado = false, canalEv = null;
 const CTA_EV = { VLL: 'SIGMA VALLADOLID', PAL: 'SIGMA PALENCIA' };
-const EV_ORDEN = { 'URGENCIA': 0, 'VISITA FALLIDA': 1, 'DESATASCO CAMIÓN CUBA': 2 };   // orden en el Excel (SQL 49–50: camión cuba = 22A con F45 aceptada)
+const EV_ORDEN = { 'URGENCIA': 0, 'VISITA FALLIDA': 1, 'DESATASCO CAMIÓN CUBA': 2 };   // orden en el Excel (SQL 49 y 51: camión cuba = 22A con F45 aceptada)
 function evPeriodoDe(f) {   // igual que public.evento_periodo
   if (!f) return '';
   const [y, m, d] = f.split('-').map(Number);
