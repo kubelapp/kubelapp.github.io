@@ -128,6 +128,10 @@
 
   .banda{padding:10px 14px;font-size:14px;display:flex;gap:10px;align-items:center}
   .banda.offline{background:#F8DEDA;color:#A33224;font-weight:600}
+  .banda.cola{background:#E3ECEF;color:var(--marca);font-weight:600;flex-wrap:wrap}
+  .banda.cola.error{background:#FDEBD8;color:#9A4E0B}
+  .banda.cola button{margin-left:auto;background:#fff;border:1px solid currentColor;color:inherit;border-radius:8px;padding:6px 10px;font-weight:700;cursor:pointer}
+  .banda.cola small{display:block;font-weight:400;font-size:12px;opacity:.85}
   .banda.instalar{background:#FFF4E5;color:#8A4B00}
   .banda.instalar button{margin-left:auto;background:none;border:0;color:#8A4B00;font-size:20px;cursor:pointer}
   .aviso{position:fixed;left:50%;bottom:calc(var(--abajo) + 24px);transform:translateX(-50%);background:var(--texto);color:#fff;padding:12px 18px;border-radius:12px;font-weight:600;z-index:30;max-width:calc(100vw - 32px);text-align:center}
@@ -146,7 +150,10 @@
 
 <script>
 /* =====================================================================
-   KUBEL Operario — web app (iPhone: añadir a inicio · Android: APK)
+   KUBEL Operario v2.6 — web app (iPhone: añadir a inicio · Android: APK)
+   v2.6: el informe y sus fotos se guardan en el móvil (IndexedDB) antes de subir; cada foto se reintenta 5 veces;
+   si no se puede, queda en cola y se sube sola (al abrir, al volver a la app, al recuperar cobertura y cada minuto).
+   Las fotos del borrador también se guardan en el móvil.
    ===================================================================== */
 const $ = (s) => document.querySelector(s);
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -240,6 +247,7 @@ async function alCambiarSesion(s) {
   history.replaceState({ p: 'dia' }, '');
   estado.pantalla = 'dia';
   pintar();
+  procesarCola();
 }
 
 // ---------- Navegación (botón atrás de Android / gesto de iPhone) ----------
@@ -250,7 +258,7 @@ function ir(pantalla, asig) {
   pintar();
 }
 async function volver() {
-  if (estado.pantalla === 'informe' && informeConDatos() && !(await preguntar('¿Salir sin enviar?', 'Se guarda el texto como borrador, pero las fotos se perderán.', 'Salir', true))) return;
+  if (estado.pantalla === 'informe' && informeConDatos() && !(await preguntar('¿Salir sin enviar?', KDB.persistente ? 'El texto y las fotos quedan guardados como borrador en este móvil.' : 'Se guarda el texto como borrador, pero las fotos se perderán.', 'Salir', true))) return;
   history.back();
 }
 window.addEventListener('popstate', async (e) => {
@@ -286,10 +294,11 @@ function bandaInstalarHTML(enLogin) {
 }
 function pintarBandas() {
   const b = $('#bandas'); if (!b) return;
-  b.innerHTML = (navigator.onLine ? '' : '<div class="banda offline">Sin conexión. Los datos pueden no estar al día.</div>') + bandaInstalarHTML(false);
+  b.innerHTML = (navigator.onLine ? '' : '<div class="banda offline">Sin conexión. Los datos pueden no estar al día.</div>') + '<div id="banda-cola"></div>' + bandaInstalarHTML(false);
+  pintarCola();
   bandaAvisos().then((h) => { if ($('#bandas') === b && h) b.insertAdjacentHTML('beforeend', h); });
 }
-window.addEventListener('online', () => { pintarBandas(); if (estado.pantalla === 'dia') cargarDia(); });
+window.addEventListener('online', () => { pintarBandas(); if (estado.pantalla === 'dia') cargarDia(); procesarCola(); });
 window.addEventListener('offline', pintarBandas);
 
 // ---------- Tiempo real: la oficina cambia algo y aparece solo ----------
@@ -304,7 +313,7 @@ function arrancarTiempoReal() {
     .subscribe();
 }
 function pararTiempoReal() { if (canal) { sb.removeChannel(canal); canal = null; } }
-document.addEventListener('visibilitychange', () => { if (!document.hidden && yo && estado.pantalla === 'dia') cargarDia(); });
+document.addEventListener('visibilitychange', () => { if (document.hidden || !yo) return; if (estado.pantalla === 'dia') cargarDia(); procesarCola(); });
 
 // ---------- Mis servicios (día) ----------
 let listaDia = [];
@@ -332,7 +341,8 @@ function pintarDia() {
 function cambiarDia(n) { irAFecha(sumar(estado.fecha, n)); }
 function irAFecha(f) { estado.fecha = f; pintarDia(); }
 async function salir() {
-  if (!(await preguntar('Cerrar sesión', '¿Seguro que quieres salir? Este móvil dejará de recibir tus avisos.', 'Salir', true))) return;
+  const pend = (await colaMia()).length;
+  if (!(await preguntar('Cerrar sesión', (pend ? `⚠️ Tienes ${pend} informe(s) sin subir: se quedan guardados en este móvil y se subirán cuando vuelvas a entrar. ` : '') + '¿Seguro que quieres salir? Este móvil dejará de recibir tus avisos.', 'Salir', true))) return;
   await KubelAvisos.desactivar(sb);
   sb.auth.signOut();
 }
@@ -371,6 +381,8 @@ async function cargarDia(lunes) {
     return;
   }
   listaDia = r.data || [];
+  const pendSubir = new Set((await colaMia()).map((x) => x.asignacion_id));
+  if (estado.pantalla !== 'dia' || f !== estado.fecha || !$('#lista')) return;
   if (!listaDia.length) { cont.innerHTML = '<div class="vacio"><b>Sin servicios este día</b>Cuando la oficina te asigne algo aparecerá aquí solo.</div>'; return; }
   const pend = listaDia.filter((a) => a.estado === 'pendiente');
   const hechos = listaDia.filter((a) => a.estado === 'hecho').length;
@@ -382,7 +394,7 @@ async function cargarDia(lunes) {
       return `<div class="tarjeta ${term ? 'terminada' : ''}" onclick="abrirParte(${i})">
         <div class="izq"><div class="num">${i + 1}</div><div class="hora">${hCorta(a.hora) || '--:--'}</div></div>
         <div class="der">
-          <div class="etiquetas"><span class="et ${a.estado}">${EST[a.estado]}</span>${p.urgente ? '<span class="et urg">URGENTE</span>' : ''}${a.tipo === 'repaso' ? '<span class="et repaso">Repaso</span>' : ''}</div>
+          <div class="etiquetas"><span class="et ${a.estado}">${EST[a.estado]}</span>${p.urgente ? '<span class="et urg">URGENTE</span>' : ''}${a.tipo === 'repaso' ? '<span class="et repaso">Repaso</span>' : ''}${pendSubir.has(a.id) ? '<span class="et repaso">⏳ Informe sin subir</span>' : ''}</div>
           <div class="dir">${esc(dirCompleta(p))}</div>
           <div class="meta">${esc([p.numero_servicio, p.gremio, p.aseguradora].filter(Boolean).join(' · '))}</div>
           ${p.descripcion ? `<div class="desc">${esc(p.descripcion)}</div>` : ''}
@@ -436,11 +448,14 @@ async function pintarParte() {
   pintarFotosOficina(p.id);
   if (estado.pantalla !== 'parte') return;
   if (r1.data && (r1.data.estado !== a.estado || r1.data.fecha !== a.fecha || r1.data.notas !== a.notas)) { estado.asig = r1.data; return pintarParte(); }
-  const infs = r2.data || [];
+  const pendientes = (await colaMia()).filter((x) => x.parte_id === p.id);
+  if (estado.pantalla !== 'parte' || !$('#mis-informes')) return;
+  const infs = [...pendientes.map((x) => ({ id: x.id, texto: x.texto, trabajo_terminado: x.terminado, necesita_repaso: !x.terminado, importe_gastos: x.importe, creado_en: x.creado, fotos: [{ count: x.fotos.length }], pendiente: true })),
+    ...(r2.data || []).filter((i) => !pendientes.some((x) => x.id === i.id))];
   if (infs.length) {
     $('#txt-inf').textContent = 'Añadir otro informe';
     $('#mis-informes').innerHTML = `<div class="seccion"><h4>Mis informes de este parte (${infs.length})</h4>${infs.map((i) => `
-      <div class="informe-prev"><div class="suave">${fHora(i.creado_en)} · ${i.fotos?.[0]?.count ?? 0} foto(s)${i.trabajo_terminado ? ' · Terminado' : ''}${i.necesita_repaso ? ' · Necesita repaso' : ''}${i.importe_gastos ? ' · Factura ' + Number(i.importe_gastos).toFixed(2).replace('.', ',') + ' €' : ''}</div>
+      <div class="informe-prev"><div class="suave">${i.pendiente ? '<b style="color:#9A4E0B">⏳ Sin subir todavía · </b>' : ''}${fHora(i.creado_en)} · ${i.fotos?.[0]?.count ?? 0} foto(s)${i.trabajo_terminado ? ' · Terminado' : ''}${i.necesita_repaso ? ' · Necesita repaso' : ''}${i.importe_gastos ? ' · Factura ' + Number(i.importe_gastos).toFixed(2).replace('.', ',') + ' €' : ''}</div>
       <div class="pre">${esc(i.texto)}</div></div>`).join('')}</div>`;
   }
 }
@@ -508,6 +523,19 @@ function pintarInforme() {
   ['i-term'].forEach((id) => $('#' + id).addEventListener('change', guardarBorrador));
   $('#i-cam').onchange = (e) => anadirFotos(e.target);
   $('#i-gal').onchange = (e) => anadirFotos(e.target);
+  cargarFotosBorrador(a.id);
+}
+// Fotos del borrador guardadas en el móvil (v2.6): no se pierden si se cierra la app antes de enviar
+async function cargarFotosBorrador(asigId) {
+  let guardadas = [];
+  try { guardadas = (await KDB.todos('borrador')).filter((x) => x.asig === asigId).sort((x, y) => x.orden - y.orden); } catch {}
+  if (estado.pantalla !== 'informe' || estado.asig?.id !== asigId || !guardadas.length) return;
+  guardadas.forEach((g) => {
+    if (fotos.some((f) => f.clave === g.clave)) return;
+    const blob = new Blob([g.datos], { type: 'image/jpeg' });
+    fotos.push({ clave: g.clave, tipo: g.tipo, blob, url: URL.createObjectURL(blob) });
+  });
+  pintarFotos();
 }
 function bloqueFotos(tipo, titulo) {
   return `<div class="seccion"><h4>${titulo} <span id="c-${tipo}"></span></h4><div class="rejilla" id="r-${tipo}"></div>
@@ -552,7 +580,9 @@ async function anadirFotos(input) {
   for (const f of files) {
     try {
       const blob = await comprimir(f);
-      fotos.push({ clave: crypto.randomUUID ? crypto.randomUUID() : String(Math.random()), tipo: tipoFoto, blob, url: URL.createObjectURL(blob) });
+      const clave = nuevoId();
+      fotos.push({ clave, tipo: tipoFoto, blob, url: URL.createObjectURL(blob) });
+      try { await KDB.poner('borrador', { clave, asig: estado.asig.id, tipo: tipoFoto, orden: Date.now() + fotos.length, datos: await blob.arrayBuffer() }); } catch {}
     } catch { fallos++; }
   }
   if (fallos) informar('Alguna foto no se pudo leer', 'Prueba a hacerla de nuevo con la cámara.');
@@ -570,6 +600,7 @@ async function quitarFoto(clave) {
   if (!(await preguntar('Quitar foto', '¿Quitar esta foto del informe?', 'Quitar', true))) return;
   const f = fotos.find((x) => x.clave === clave); if (f) URL.revokeObjectURL(f.url);
   fotos = fotos.filter((x) => x.clave !== clave); pintarFotos();
+  try { await KDB.quitar('borrador', clave); } catch {}
 }
 function progreso(txt, pct) {
   $('#i-prog').classList.remove('oculto'); $('#i-prog-t').textContent = txt; $('#i-prog-b').style.width = pct + '%';
@@ -582,48 +613,172 @@ async function enviarInforme() {
   if (!texto) return informar('Falta el informe', 'Escribe qué se ha hecho en la visita.');
   if (importe !== null && (isNaN(importe) || importe < 0)) return informar('Importe no válido', 'Escribe solo números, p. ej. 25,50');
   if (importe && !fotos.some((f) => f.tipo === 'factura')) return informar('Falta la factura', 'Has puesto el importe de la factura: añade la foto de la factura o ticket.');
-  if (!navigator.onLine) return informar('Sin conexión', 'No tienes internet ahora mismo. El texto queda guardado; envíalo cuando tengas cobertura (no cierres esta pantalla para no perder las fotos).');
 
   const btn = $('#i-enviar'); btn.disabled = true;
-  const informeId = crypto.randomUUID ? crypto.randomUUID() : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
-  const parteId = a.parte.id;
+  progreso('Guardando en el móvil…', 2);
+  // 1) Primero se guarda TODO en el móvil (informe + fotos). Desde aquí ya no se pierde nada.
+  const informeId = nuevoId(), parteId = a.parte.id;
+  let item;
   try {
-    const subidas = [];
-    for (let i = 0; i < fotos.length; i++) {
-      progreso(`Subiendo foto ${i + 1} de ${fotos.length}…`, Math.round((i / (fotos.length + 1)) * 100));
-      const f = fotos[i];
-      const ruta = `${yo.id}/${parteId}/${informeId}/${f.tipo}-${i + 1}.jpg`;
-      let intento = 0, error;
-      do {
-        ({ error } = await sb.storage.from('fotos').upload(ruta, f.blob, { contentType: 'image/jpeg' }));
-        if (error && /already exists|Duplicate/i.test(error.message)) error = null; // ya se subió en un intento anterior
-        intento++;
-      } while (error && intento < 3);
-      if (error) throw error;
-      subidas.push({ tipo: f.tipo, ruta });
-    }
-    progreso('Guardando informe…', 92);
-    const { error: e1 } = await sb.from('informes').insert({
-      id: informeId, asignacion_id: a.id, parte_id: parteId, operario_id: yo.id,
-      texto, trabajo_terminado: $('#i-term').checked, necesita_repaso: !$('#i-term').checked, importe_gastos: importe,
-    });
-    if (e1) throw e1;
-    if (subidas.length) {
-      const { error: e2 } = await sb.from('fotos').insert(subidas.map((x) => ({ informe_id: informeId, parte_id: parteId, tipo: x.tipo, ruta: x.ruta, subido_por: yo.id })));
-      if (e2) throw e2;
-    }
-    progreso('¡Enviado!', 100);
-    try { localStorage.removeItem(claveBorrador()); } catch {}
-    fotos.forEach((f) => URL.revokeObjectURL(f.url)); fotos = [];
-    await informar('Informe enviado ✅', 'La oficina ya lo puede ver.');
-    estado.pantalla = 'dia';
-    history.go(-2);
-    setTimeout(() => { if (estado.pantalla !== 'dia') { estado.pantalla = 'dia'; pintar(); } }, 400);
+    item = {
+      id: informeId, operario_id: yo.id, asignacion_id: a.id, parte_id: parteId, numero_servicio: a.parte.numero_servicio,
+      texto, terminado: $('#i-term').checked, importe, creado: new Date().toISOString(), error: null,
+      fotos: await Promise.all(fotos.map(async (f, i) => ({ tipo: f.tipo, ruta: `${yo.id}/${parteId}/${informeId}/${f.tipo}-${i + 1}.jpg`, datos: await f.blob.arrayBuffer(), subida: false }))),
+    };
+    await KDB.poner('cola', item);
   } catch (e) {
     $('#i-prog').classList.add('oculto'); btn.disabled = false;
-    informar('No se pudo enviar', `${mensaje(e)}\n\nNo se ha perdido nada: comprueba la conexión y pulsa Enviar otra vez.`);
+    return informar('No se pudo guardar', `${mensaje(e)}\n\nNo se ha perdido nada: pulsa Enviar otra vez.`);
   }
+  try { localStorage.removeItem(claveBorrador()); } catch {}
+  for (const f of fotos) { try { await KDB.quitar('borrador', f.clave); } catch {} }
+  fotos.forEach((f) => URL.revokeObjectURL(f.url)); fotos = [];
+
+  // 2) Se sube (cada foto con varios reintentos). Si no se puede ahora, queda en cola y se sube sola.
+  const ok = await conCandado(() => subirInforme(informeId, (txt, pct) => { if ($('#i-prog')) progreso(txt, pct); }));
+  if (ok) await informar('Informe enviado ✅', 'La oficina ya lo puede ver.');
+  else if (!KDB.persistente) await informar('Pendiente de subir ⚠️', 'Ahora mismo no se ha podido subir todo. Este móvil no deja guardarlo de forma permanente: NO cierres la app hasta que salga «Informe pendiente subido ✅». Se reintenta solo cada minuto.');
+  else await informar('Guardado en el móvil 📱', 'Ahora mismo no se ha podido subir todo (sin cobertura o el servidor va lento).\n\nEl informe y las fotos están guardados en este móvil y se subirán solos en cuanto se pueda. Puedes seguir trabajando.\n\nCuando tengas cobertura, abre la app un momento para que termine. No cierres sesión ni borres la app.');
+  estado.pantalla = 'dia';
+  history.go(-2);
+  setTimeout(() => { if (estado.pantalla !== 'dia') { estado.pantalla = 'dia'; pintar(); } }, 400);
+  procesarCola();
 }
+
+// ---------- Guardado en el móvil (IndexedDB) y cola de subida (v2.6) ----------
+function nuevoId() {
+  return crypto.randomUUID ? crypto.randomUUID() : ([1e7] + -1e3 + -4e3 + -8e3 + -1e11).replace(/[018]/g, (c) => (c ^ (crypto.getRandomValues(new Uint8Array(1))[0] & (15 >> (c / 4)))).toString(16));
+}
+// Almacén del móvil. Si el navegador no deja usar IndexedDB, funciona en memoria (como antes).
+const KDB = (() => {
+  const mem = { cola: new Map(), borrador: new Map() };
+  const claves = { cola: 'id', borrador: 'clave' };
+  let abierta = null;
+  const api = { persistente: !!window.indexedDB };
+  const abrir = () => abierta || (abierta = new Promise((ok, mal) => {
+    if (!window.indexedDB) return mal(new Error('sin IndexedDB'));
+    const r = indexedDB.open('kubel-operario', 1);
+    r.onupgradeneeded = () => { const db = r.result; Object.entries(claves).forEach(([n, k]) => { if (!db.objectStoreNames.contains(n)) db.createObjectStore(n, { keyPath: k }); }); };
+    r.onsuccess = () => ok(r.result);
+    r.onerror = () => mal(r.error);
+    r.onblocked = () => mal(new Error('IndexedDB bloqueada'));
+  }).catch((e) => { api.persistente = false; throw e; }));
+  async function tx(almacen, modo, fn) {
+    let db;
+    try { db = await abrir(); } catch { return fn(null, mem[almacen]); }
+    return new Promise((ok, mal) => {
+      const t = db.transaction(almacen, modo); let res;
+      const rq = fn(t.objectStore(almacen));
+      if (rq) rq.onsuccess = () => { res = rq.result; };
+      t.oncomplete = () => ok(res); t.onerror = () => mal(t.error); t.onabort = () => mal(t.error || new Error('Sin espacio en el móvil'));
+    });
+  }
+  api.poner = (a, v) => tx(a, 'readwrite', (st, m) => (st ? st.put(v) : void m.set(v[claves[a]], v)));
+  api.quitar = (a, k) => tx(a, 'readwrite', (st, m) => (st ? st.delete(k) : void m.delete(k)));
+  api.leer = (a, k) => tx(a, 'readonly', (st, m) => (st ? st.get(k) : m.get(k)));
+  api.todos = (a) => tx(a, 'readonly', (st, m) => (st ? st.getAll() : [...m.values()]));
+  try { navigator.storage?.persist?.(); } catch {}
+  return api;
+})();
+async function colaMia() {
+  if (!yo) return [];
+  try { return (await KDB.todos('cola')).filter((x) => x.operario_id === yo.id).sort((x, y) => x.creado.localeCompare(y.creado)); } catch { return []; }
+}
+// Una sola subida a la vez (la del botón Enviar y la automática no se pisan)
+let cadenaSubida = Promise.resolve();
+function conCandado(fn) { const p = cadenaSubida.then(fn, fn); cadenaSubida = p.catch(() => {}); return p; }
+const esperar = (ms) => new Promise((ok) => setTimeout(ok, ms));
+// Si el servidor no contesta en 90 s se da por fallido ese intento (si al final llegó, el siguiente lo ve como «ya subida»)
+const conTope = (p, ms = 90000) => Promise.race([p, esperar(ms).then(() => ({ error: new Error('El servidor tarda demasiado en responder (timeout)') }))]);
+const ESPERAS = [0, 2000, 5000, 10000, 20000]; // 5 intentos por foto (~40 s)
+async function conReintentos(fn) {
+  let error;
+  for (const ms of ESPERAS) {
+    if (ms) await esperar(ms);
+    try { error = await fn(); } catch (e) { error = e; }
+    if (!error) return null;
+    if (/JWT|row-level security|violates|not found/i.test(error.message || '') && !/timeout|gateway|fetch/i.test(error.message || '')) break; // fallo que no se arregla reintentando
+  }
+  return error;
+}
+let estadoCola = '';
+// Sube un informe de la cola. Devuelve true si ha terminado (o ya no está en la cola).
+async function subirInforme(id, alProgreso = () => {}) {
+  let it = await KDB.leer('cola', id);
+  if (!it) return true;
+  const total = it.fotos.length;
+  const aviso2 = (txt, pct) => { estadoCola = txt; alProgreso(txt, pct); pintarColaEstado(); };
+  try {
+    for (let i = 0; i < total; i++) {
+      const f = it.fotos[i];
+      if (f.subida) continue;
+      aviso2(`Subiendo foto ${i + 1} de ${total}…`, Math.round(5 + (i / (total + 1)) * 85));
+      const error = await conReintentos(async () => {
+        const { error: e } = await conTope(sb.storage.from('fotos').upload(f.ruta, new Blob([f.datos], { type: 'image/jpeg' }), { contentType: 'image/jpeg' }));
+        return e && /already exists|Duplicate/i.test(e.message) ? null : e; // ya estaba subida de un intento anterior
+      });
+      if (error) throw error;
+      f.subida = true; f.datos = null; // ya está en el servidor: se libera espacio del móvil
+      await KDB.poner('cola', it);
+    }
+    aviso2('Guardando informe…', 92);
+    const e1 = await conReintentos(async () => {
+      const { error } = await sb.from('informes').insert({
+        id: it.id, asignacion_id: it.asignacion_id, parte_id: it.parte_id, operario_id: it.operario_id,
+        texto: it.texto, trabajo_terminado: it.terminado, necesita_repaso: !it.terminado, importe_gastos: it.importe,
+      });
+      return error && (error.code === '23505' || /duplicate key/i.test(error.message)) ? null : error; // ya se guardó antes
+    });
+    if (e1) throw e1;
+    if (total) {
+      const e2 = await conReintentos(async () => {
+        const { data: ya, error: eSel } = await sb.from('fotos').select('ruta').eq('informe_id', it.id);
+        if (eSel) return eSel;
+        const faltan = it.fotos.filter((f) => !(ya || []).some((y) => y.ruta === f.ruta));
+        if (!faltan.length) return null;
+        const { error } = await sb.from('fotos').insert(faltan.map((f) => ({ informe_id: it.id, parte_id: it.parte_id, tipo: f.tipo, ruta: f.ruta, subido_por: it.operario_id })));
+        return error;
+      });
+      if (e2) throw e2;
+    }
+    await KDB.quitar('cola', it.id);
+    aviso2('¡Enviado!', 100);
+    estadoCola = '';
+    return true;
+  } catch (e) {
+    it.error = mensaje(e); it.intento_en = new Date().toISOString();
+    try { await KDB.poner('cola', it); } catch {}
+    estadoCola = '';
+    return false;
+  } finally { pintarCola(); }
+}
+// Sube lo que haya pendiente: al abrir la app, al volver a ella, al recuperar cobertura y cada minuto
+async function procesarCola() {
+  if (!yo || !sb) return;
+  return conCandado(async () => {
+    const lista = await colaMia();
+    let subidos = 0;
+    for (const it of lista) {
+      if (!(await subirInforme(it.id))) break; // si una falla, se espera a la próxima vuelta
+      subidos++;
+    }
+    if (subidos) {
+      aviso(subidos === 1 ? 'Informe pendiente subido ✅' : `${subidos} informes pendientes subidos ✅`, 3500);
+      if (estado.pantalla === 'dia') cargarDia();
+    }
+  });
+}
+setInterval(() => { if (!document.hidden) procesarCola(); }, 60000);
+async function pintarCola() {
+  const b = $('#banda-cola'); if (!b) return;
+  const lista = await colaMia();
+  if (!lista.length) { b.innerHTML = ''; return; }
+  const n = lista.length, err = lista.find((x) => x.error)?.error;
+  b.innerHTML = `<div class="banda cola ${err && !estadoCola ? 'error' : ''}"><span>📤 ${n} informe${n === 1 ? '' : 's'} guardado${n === 1 ? '' : 's'} en el móvil, sin subir
+    <small id="cola-estado">${esc(estadoCola || (err ? 'Último intento: ' + err : 'Se subirán solos en cuanto haya conexión.'))}</small></span>
+    <button onclick="procesarCola()">Subir ahora</button></div>`;
+}
+function pintarColaEstado() { const e = $('#cola-estado'); if (e && estadoCola) e.textContent = estadoCola; }
 
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(() => {});

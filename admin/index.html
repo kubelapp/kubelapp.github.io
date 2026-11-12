@@ -606,6 +606,8 @@ const FILTROS = {
   cie: (x, v) => (x.cerrado_por || '—') === v,
 };
 const SIN_CIERRE = 'Sin registrar';
+// Compañías activas en Facturación: salen siempre en el filtro y en «+ Añadir línea», aunque aún no tengan líneas
+const CIAS_FAC = ['SIGMA', 'TASHO', 'ONRED', 'HOMESERVE', 'YAVOI'];
 const txtCierre = (x) => x.cerrado_por ? `${esc(x.cerrado_por)}${x.cerrado_en ? ` <span class="cierre">${new Date(x.cerrado_en).toLocaleDateString('es-ES', { day: '2-digit', month: '2-digit', year: '2-digit' })}</span>` : ''}` : '<span class="cierre">—</span>';
 function valoresFiltro() {
   return { op: $('#ff-op').value, cia: $('#ff-cia').value, est: $('#ff-est').value, cie: $('#ff-cie').value, mes: $('#ff-mes').value, dia: $('#ff-dia').value };
@@ -631,6 +633,7 @@ function pintarFac() {
   const ops = contar(filas.filter((x) => pasa(x, f, 'op')), (x) => x.operario || '—');
   rellenarSelect('#ff-op', 'Todos los operarios', [...ops].sort((a, b) => a[0].localeCompare(b[0])).map(([k, n]) => [k, k, n]), f.op);
   const cias = contar(filas.filter((x) => pasa(x, f, 'cia')), (x) => x.compania || '—');
+  CIAS_FAC.forEach((c) => { if (!cias.has(c)) cias.set(c, 0); });
   rellenarSelect('#ff-cia', 'Todas las compañías', [...cias].sort((a, b) => b[1] - a[1]).map(([k, n]) => [k, k, n]), f.cia);
   const be = filas.filter((x) => pasa(x, f, 'est'));
   rellenarSelect('#ff-est', 'Liquidado y no liquidado', [['no', 'NO LIQUIDADO', be.filter((x) => !x.liquidado && !sinTrabajo(x)).length], ['liq', 'LIQUIDADO', be.filter((x) => x.liquidado).length], ['sinimp', 'Sin importe', be.filter((x) => x.importe == null && !sinTrabajo(x)).length], ['sintrab', 'Sin trabajo aparente', be.filter(sinTrabajo).length]], f.est);
@@ -708,10 +711,10 @@ async function cambiarLiq(id) {
 function modalLinea(id) {
   const x = id ? filas.find((f) => f.id === id) : { fecha: hoyISO(), compania: 'SIGMA', liquidado: false };
   const ops = [...new Set(filas.map((f) => f.operario).filter(Boolean))].sort();
-  const cias = [...new Set(['SIGMA', 'TASHO', 'YAVOI', ...filas.map((f) => f.compania).filter(Boolean)])];
+  const cias = [...new Set([...CIAS_FAC, ...filas.map((f) => f.compania).filter(Boolean)])];
   abrirModal(`
     <h3>${id ? 'Servicio ' + esc(x.servicio) : 'Nueva línea'}</h3>
-    ${id ? `<div class="sub">${x.origen === 'auto' ? 'Entró sola al cerrarse en SIGMA' : x.origen === 'excel' ? 'Del Excel antiguo' : x.origen === 'factura' ? 'Añadida desde una factura' : 'Añadida a mano'}${x.liquidado_en ? ' · liquidado el ' + fecha(x.liquidado_en) : ''}${x.cerrado_por ? ` · cerrado por <b>${esc(x.cerrado_por)}</b>${x.cerrado_en ? ' el ' + fecha(x.cerrado_en) : ''}` : ''}</div>` : ''}
+    ${id ? `<div class="sub">${x.origen === 'auto' ? (x.compania && x.compania !== 'SIGMA' ? 'Entró sola al cerrarse en KUBEL' : 'Entró sola al cerrarse en SIGMA') : x.origen === 'excel' ? 'Del Excel antiguo' : x.origen === 'factura' ? 'Añadida desde una factura' : 'Añadida a mano'}${x.liquidado_en ? ' · liquidado el ' + fecha(x.liquidado_en) : ''}${x.cerrado_por ? ` · cerrado por <b>${esc(x.cerrado_por)}</b>${x.cerrado_en ? ' el ' + fecha(x.cerrado_en) : ''}` : ''}</div>` : ''}
     <div class="dos"><div><label>Fecha</label><input type="date" id="l-fecha" value="${esc(x.fecha || '')}"></div>
       <div><label>Servicio</label><input id="l-serv" value="${esc(x.servicio || '')}"></div></div>
     <label>Dirección</label><input id="l-dir" value="${esc(x.direccion || '')}">

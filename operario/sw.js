@@ -1,6 +1,6 @@
 // Service worker: permite instalar la app y abrirla aunque falle la cobertura.
 // Siempre intenta la red primero (para tener lo último) y si no hay, usa la copia guardada.
-const CACHE = 'kubel-operario-v2.5';
+const CACHE = 'kubel-operario-v2.6';
 const BASICOS = ['./', 'index.html', 'manifest.webmanifest', 'iconos/icono-192.png', '../comun/config.js', '../comun/cargar-supabase.js', '../comun/avisos.js', '../comun/acceso.js'];
 self.addEventListener('install', (e) => { e.waitUntil(caches.open(CACHE).then((c) => c.addAll(BASICOS)).then(() => self.skipWaiting())); });
 self.addEventListener('activate', (e) => {
