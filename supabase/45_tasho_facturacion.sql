@@ -244,6 +244,14 @@ begin
      and not exists (select 1 from public.tasho_trabajos t where t.id_exp = a.id_exp);
   get diagnostics v_n = row_count; r_cero := r_cero + v_n;
 
+  -- informados hace menos de un mes y aún sin valorar: se espera (se rellenan solos cuando TASHO los valore)
+  update public.facturacion f set importe_nota = 'Informado en TASHO, aún sin valorar (Id Exp. ' || a.id_exp || '): se rellena solo; a 0 € si en un mes sigue sin valorar'
+    from public.tasho_alias a
+   where upper(coalesce(f.compania, '')) = 'TASHO' and f.importe is null and a.informado and a.id_exp is not null
+     and replace(f.servicio, ' ', '') = a.numero and f.fecha >= current_date - 30
+     and not exists (select 1 from public.tasho_trabajos t where t.id_exp = a.id_exp)
+     and f.importe_nota is distinct from 'Informado en TASHO, aún sin valorar (Id Exp. ' || a.id_exp || '): se rellena solo; a 0 € si en un mes sigue sin valorar';
+
   -- nº que TASHO no conoce: se avisa en la línea
   update public.facturacion f set importe_nota = 'Nº no encontrado en TASHO: revisar el nº del servicio'
     from public.tasho_alias a
