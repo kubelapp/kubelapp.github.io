@@ -1,5 +1,5 @@
 // KUBEL — Robot del portal TASHO (S.I.C.I., tasho.sistemasici.es).
-// v1.2 (12/11/2026; v1.1 del 11/11). SOLO LECTURA en TASHO: nunca graba, envía ni confirma nada en el portal.
+// v1.3 (12/11/2026; v1.1 del 11/11). SOLO LECTURA en TASHO: nunca graba, envía ni confirma nada en el portal.
 // Entra con TASHO_USUARIO / TASHO_CLAVE y vuelca en `partes` (compañía 3, origen 'tasho'):
 //   · «No informados» (buscador, estado_cita = N) y «Pendiente cita» → servicios abiertos.
 //   · «Trabajos realizados» (últimos 120 días; ?dias=N para más) → tasho_trabajos (SQL 45) → privado.tasho_volcar_facturacion():
@@ -382,6 +382,26 @@ async function volcar(ses: Sesion, lect: Awaited<ReturnType<typeof leerTodo>>, i
         const r = await sql`delete from public.tasho_trabajos where fecha between ${fmtIso(lect.trabajosDesde)} and ${fmtIso(lect.trabajosHasta)} and visto_en < ${marca}`;
         resumen.trabajos_retirados = r.count;
       } else avisos.push('Trabajos realizados: lo leído no cuadra con el TOTAL del portal; no se retira ninguna línea');
+      // Nº de Facturación que no son un expediente conocido (nº de parte, Id Exp., mal escritos): se buscan en TASHO
+      const alias: string[] = [];
+      for (const { numero } of await sql`select numero from privado.tasho_alias_pendientes(8)`) {
+        if (Date.now() - inicio > 100_000) break;
+        const campos = /^\d{6}$/.test(numero) ? (numero.startsWith('2') ? ['idParte', 'idMensaje'] : ['idMensaje', 'idParte']) : ['nroExpediente'];
+        let hallado: Item | null = null, informado: boolean | null = null;
+        buscar: for (const campo of campos) for (const est of ['V', '']) {
+          const r = await ses.xajax('buscarV2', ses.formBuscador({ [campo]: numero, estado_cita: est }), true);
+          const c = leerCitas(r.html, 'no_informado');
+          if (c.length) { hallado = c[0]; informado = est === 'V'; break buscar; }
+        }
+        const c = hallado?.campos ?? {};
+        await sql`
+          insert into public.tasho_alias (numero, id_exp, expediente, parte, informado, buscado_en)
+          values (${numero}, ${c['Id Exp.'] || null}, ${c['Expediente'] || null}, ${c['Parte'] || hallado?.parte || null}, ${informado}, now())
+          on conflict (numero) do update set id_exp = excluded.id_exp, expediente = excluded.expediente, parte = excluded.parte,
+            informado = excluded.informado, buscado_en = now() where tasho_alias.fuente <> 'manual'`;
+        alias.push(`${numero} → ${c['Id Exp.'] || 'no encontrado'}`);
+      }
+      if (alias.length) resumen.alias = alias;
       const [v] = await sql`select privado.tasho_volcar_facturacion() as r`;
       resumen.facturacion = v.r;
     } catch (e) { avisos.push('Facturación TASHO: ' + (e as Error).message); }
