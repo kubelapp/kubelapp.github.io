@@ -380,7 +380,7 @@
     <div class="filtros">
       <select id="ev-per" onchange="pintarEv()" title="Periodo de envío"></select>
       <select id="ev-cta" onchange="pintarEv()" title="Cuenta"><option value="">VLL y PAL</option><option value="VLL">SIGMA VALLADOLID</option><option value="PAL">SIGMA PALENCIA</option></select>
-      <select id="ev-tipo" onchange="pintarEv()" title="Tipo"><option value="">Todos los eventos</option><option>URGENCIA</option><option>VISITA FALLIDA</option><option>DESATASCO CAMIÓN CUBA</option></select>
+      <select id="ev-tipo" onchange="pintarEv()" title="Tipo"><option value="">Todos los eventos</option><option>URGENCIA</option><option>VISITA FALLIDA</option><option>DESATASCO CAMIÓN CUBA</option><option>MATERIAL</option></select>
       <select id="ev-env" onchange="pintarEv()" title="Envío"><option value="">Enviados y sin enviar</option><option value="no">Sin enviar</option><option value="si">Enviados</option></select>
     </div>
     <div id="ev-plazo" class="nota ev-plazo"></div>
@@ -1563,7 +1563,7 @@ async function excelKm() {
 // =====================================================================
 let evFilas = [], evCargado = false, canalEv = null;
 const CTA_EV = { VLL: 'SIGMA VALLADOLID', PAL: 'SIGMA PALENCIA' };
-const EV_ORDEN = { 'URGENCIA': 0, 'VISITA FALLIDA': 1, 'DESATASCO CAMIÓN CUBA': 2 };   // orden en el Excel (SQL 49 y 51: camión cuba = 22A con F45 aceptada)
+const EV_ORDEN = { 'URGENCIA': 0, 'VISITA FALLIDA': 1, 'DESATASCO CAMIÓN CUBA': 2, 'MATERIAL': 3 };   // orden en el Excel (SQL 49 y 51: camión cuba = 22A con F45 aceptada; SQL 52: MATERIAL, solo a mano)
 function evPeriodoDe(f) {   // igual que public.evento_periodo
   if (!f) return '';
   const [y, m, d] = f.split('-').map(Number);
@@ -1632,6 +1632,7 @@ function pintarEv() {
     <div class="kpi"><b>${n((x) => x.tipo === 'URGENCIA')}</b><span>Urgencias</span></div>
     <div class="kpi"><b>${n((x) => x.tipo === 'VISITA FALLIDA')}</b><span>Visitas fallidas</span></div>
     <div class="kpi"><b>${n((x) => x.tipo === 'DESATASCO CAMIÓN CUBA')}</b><span>Desatascos camión cuba</span></div>
+    <div class="kpi"><b>${n((x) => x.tipo === 'MATERIAL')}</b><span>Material</span></div>
     <div class="kpi"><b>${n((x) => x.cuenta === 'VLL')}</b><span>SIGMA Valladolid</span></div>
     <div class="kpi"><b>${n((x) => x.cuenta === 'PAL')}</b><span>SIGMA Palencia</span></div>
     <div class="kpi"><b>${n((x) => x.enviado_en)}</b><span>Enviados al delegado</span></div>
@@ -1640,7 +1641,7 @@ function pintarEv() {
   $('#ev-lista').innerHTML = ver.length ? `<div class="tabla-km"><table><thead><tr>
       <th>Evento</th><th>Servicio</th><th>Cuenta</th><th>Día de visita</th><th>Dirección</th><th>Población</th><th>Operario</th><th>Referencia</th><th>Comentario</th><th>Enviado</th><th></th></tr></thead><tbody>
     ${ver.map((x) => `<tr data-k="${x.id}" class="${x.enviado_en ? 'env' : ''} ${!x.fecha_visita ? 'sinf' : ''}">
-      <td><span class="chip ${x.tipo === 'URGENCIA' ? 'mal' : x.tipo === 'DESATASCO CAMIÓN CUBA' ? 'ok' : 'av'}">${esc(x.tipo)}</span>${x.origen === 'manual' ? ' <span class="chip gr">a mano</span>' : ''}</td>
+      <td><span class="chip ${x.tipo === 'URGENCIA' ? 'mal' : x.tipo === 'DESATASCO CAMIÓN CUBA' ? 'ok' : x.tipo === 'MATERIAL' ? 'gr' : 'av'}">${esc(x.tipo)}</span>${x.origen === 'manual' ? ' <span class="chip gr">a mano</span>' : ''}</td>
       <td><b>${esc(x.servicio || '—')}</b></td>
       <td>${esc(x.cuenta || '—')}</td>
       <td><input type="date" class="evf" value="${esc(x.fecha_visita || '')}" onchange="guardarEv('${x.id}', 'fecha_visita', this)" title="${x.fecha_manual ? 'Puesto a mano (la BD ya no lo cambia)' : 'Automático'}">${x.fecha_manual ? ' ✎' : ''}
@@ -1700,7 +1701,7 @@ function modalEvento() {
   abrirModal(`
     <h3>Nuevo evento SIGMA</h3>
     <div class="sub">Para un evento que KUBEL no haya apuntado solo. Va al periodo que elijas.</div>
-    <div class="dos"><div><label>Evento</label><select id="em-tipo"><option>URGENCIA</option><option>VISITA FALLIDA</option><option>DESATASCO CAMIÓN CUBA</option></select></div>
+    <div class="dos"><div><label>Evento</label><select id="em-tipo"><option>URGENCIA</option><option>VISITA FALLIDA</option><option>DESATASCO CAMIÓN CUBA</option><option>MATERIAL</option></select></div>
       <div><label>Cuenta</label><select id="em-cta"><option value="VLL">SIGMA VALLADOLID</option><option value="PAL">SIGMA PALENCIA</option></select></div></div>
     <div class="dos"><div><label>Nº servicio</label><input id="em-serv" inputmode="numeric"></div>
       <div><label>Día de visita</label><input type="date" id="em-fecha" value="${hoyISO()}"></div></div>
@@ -1741,7 +1742,7 @@ async function excelEv(cta) {
     const datos = filas.map((x) => [x.servicio || '', x.tipo, x.fecha_visita ? new Date(x.fecha_visita + 'T00:00:00') : '', x.direccion || '', x.poblacion || '']);
     const nT = (t) => filas.filter((x) => x.tipo === t).length;
     const aoa = [[`KUBEL DISEÑO, SL · ${CTA_EV[cta]} · Eventos del ${evFechaL(r.desde)} al ${evFechaL(r.hasta)}`], [], cab, ...datos, [],
-      ['URGENCIAS', nT('URGENCIA')], ['VISITAS FALLIDAS', nT('VISITA FALLIDA')], ['DESATASCOS CAMIÓN CUBA', nT('DESATASCO CAMIÓN CUBA')], ['TOTAL EVENTOS', filas.length]];
+      ['URGENCIAS', nT('URGENCIA')], ['VISITAS FALLIDAS', nT('VISITA FALLIDA')], ['DESATASCOS CAMIÓN CUBA', nT('DESATASCO CAMIÓN CUBA')], ['MATERIAL', nT('MATERIAL')], ['TOTAL EVENTOS', filas.length]];
     const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true, dateNF: 'dd/mm/yyyy' });
     ws['!cols'] = [14, 24, 14, 42, 22].map((w) => ({ wch: w }));
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Eventos');
