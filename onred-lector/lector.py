@@ -323,8 +323,7 @@ def main():
                 if pide_login(html):
                     # Diagnóstico (sin valores de cookies): adónde llevó ONRED y qué cookies hay
                     galletas = ','.join(sorted({f'{c.name}@{c.path}' for c in p.jar}))
-                    raise Fallo('ONRED no deja ver esta ficha (servicio terminado o de otro profesional) · '
-                                f'url={p.ultima.split("#")[0][-90:]} · cookies={galletas[:200]} · tras entrar: {p.diag}')
+                    raise Fallo(f'ONRED pide el login en la ficha · cookies={galletas[:120]} · tras entrar: {p.diag}')
                 html = con_personas(p, f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}', html)
                 tanda[n] = ligero(html)
             except Fallo as e:
