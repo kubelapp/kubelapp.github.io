@@ -109,6 +109,8 @@ export function leerFicha(html: string) {
   return {
     datos, otros,
     comentarios: tabla('ContentPlaceHolder1_DatosCli_GVComentariosServ'),
+    // «Ver Personas Relacionadas» (lector v8): Persona Rel., Relación, Nombre, Apellidos, Tlf. 1, Tipo tlf.1, Tlf. 2, Tipo tlf.2, Mail…
+    personas: tabla('ContentPlaceHolder1_DatosCli_UCDatosPersRelacionArbol_GVPersonas'),
     gremios: tabla('ContentPlaceHolder1_UCGestservicios_GVReparacion'),
   };
 }

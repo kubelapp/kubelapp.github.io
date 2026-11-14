@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = 'lector-7'  # v7: entrar = sesión NUEVA (borra las cookies: tras abrir una Valoración, ONRED deja la sesión del servidor inservible para las fichas y volver a entrar con la misma no basta); tras las valoraciones no se guarda la sesión. v6: si ONRED cierra la sesión en una Valoración, entra de nuevo (hasta 3 veces) y sigue con las demás. v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
+VERSION = 'lector-8'  # v8: la ficha se manda con «Ver Personas Relacionadas» abierto (teléfonos del asegurado, perjudicados y administrador; solo lectura, si falla se manda la ficha normal). v7: entrar = sesión NUEVA (borra las cookies: tras abrir una Valoración, ONRED deja la sesión del servidor inservible para las fichas y volver a entrar con la misma no basta); tras las valoraciones no se guarda la sesión. v6: si ONRED cierra la sesión en una Valoración, entra de nuevo (hasta 3 veces) y sigue con las demás. v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
 BASE = os.environ.get('ONRED_BASE', 'https://www.funcionareparaciones.es/cronosp/')  # ONRED_BASE: solo pruebas
 KUBEL_URL_DEF = 'https://hytmotuhdxbzpustnlzx.supabase.co/functions/v1/onred-recibir'
 COOKIES = os.environ.get('ONRED_COOKIES', '/var/lib/kubel-onred/cookies.txt')
@@ -217,6 +217,30 @@ def valoracion(p, n, prof):
     return p.pedir(ruta, f)
 
 
+def con_personas(p, ruta, html):
+    """Pulsa «Ver Personas Relacionadas» (solo muestra la tabla con los teléfonos; no graba nada). Si algo falla, la ficha normal."""
+    b = None
+    for m in re.finditer(r'<input\b[^>]*>', html, re.I):
+        if re.search(r'\bid="ContentPlaceHolder1_DatosCli_BtnVerPersR"', m.group(0)):
+            b = m.group(0)
+            break
+    if not b:
+        return html
+    try:
+        f = formulario(html)
+        f['__EVENTTARGET'] = ''
+        f['__EVENTARGUMENT'] = ''
+        f[htmlmod.unescape(re.search(r'\bname="([^"]*)"', b).group(1))] = htmlmod.unescape(
+            (re.search(r'\bvalue="([^"]*)"', b) or [None, 'Ver Personas Relacionadas'])[1])
+        h2 = p.pedir(ruta, f)
+    except Exception as e:  # noqa: BLE001
+        print('Personas relacionadas no disponibles:', e)
+        return html
+    if pide_login(h2) or 'DatosCli_TxtNumservicio' not in h2:
+        return html
+    return h2
+
+
 def ligero(html):
     """Quita lo que KUBEL no necesita (estado ASP.NET y scripts) para mandar menos datos."""
     html = re.sub(r'<input[^>]*name="__(VIEWSTATE|EVENTVALIDATION)[^"]*"[^>]*>', '', html, flags=re.I)
@@ -294,6 +318,7 @@ def main():
                     html = p.pedir(f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}')
                 if pide_login(html):
                     raise Fallo('ONRED no deja ver esta ficha (servicio terminado o de otro profesional)')
+                html = con_personas(p, f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}', html)
                 tanda[n] = ligero(html)
             except Fallo as e:
                 tanda[n] = {'error': str(e)}

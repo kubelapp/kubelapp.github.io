@@ -1,4 +1,4 @@
-// KUBEL — onred-recibir (v4, 12/11/2026). v4: pide al lector la «Valoración» de los servicios OnRed con línea de
+// KUBEL — onred-recibir (v5, 14/11/2026). v5: la ficha trae «Personas Relacionadas» (lector v8) → ficha.personas; los teléfonos los vuelca privado.onred_volcar (SQL 55). v4: pide al lector la «Valoración» de los servicios OnRed con línea de
 // Facturación sin liquidar (privado.onred_valorar, SQL 46), la lee (leerValoracion) y la vuelca en partes.onred_importe
 // (privado.onred_valoracion_volcar) → importe en Facturación. v3: guarda el error de una ficha aunque el servicio no esté aún en
 // onred_servicios y dice al lector qué versión debe tener (privado.ajustes 'onred_lector_commit'). v2: vuelca en Servicios (privado.onred_volcar, SQL 42), pide también las
