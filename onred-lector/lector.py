@@ -22,7 +22,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = 'lector-8'  # v8: la ficha se manda con «Ver Personas Relacionadas» abierto (teléfonos del asegurado, perjudicados y administrador; solo lectura, si falla se manda la ficha normal). v7: entrar = sesión NUEVA (borra las cookies: tras abrir una Valoración, ONRED deja la sesión del servidor inservible para las fichas y volver a entrar con la misma no basta); tras las valoraciones no se guarda la sesión. v6: si ONRED cierra la sesión en una Valoración, entra de nuevo (hasta 3 veces) y sigue con las demás. v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
+VERSION = 'lector-8'  # v8: antes de la ficha pasa por la lista tras entrar y, si ONRED pide el login, apunta la url y las cookies (nombres) en el error; la ficha se manda con «Ver Personas Relacionadas» abierto (teléfonos del asegurado, perjudicados y administrador; solo lectura, si falla se manda la ficha normal). v7: entrar = sesión NUEVA (borra las cookies: tras abrir una Valoración, ONRED deja la sesión del servidor inservible para las fichas y volver a entrar con la misma no basta); tras las valoraciones no se guarda la sesión. v6: si ONRED cierra la sesión en una Valoración, entra de nuevo (hasta 3 veces) y sigue con las demás. v5: lee la «Valoración» de los servicios que pide KUBEL (importe para Facturación). v4: renueva la sesión como mucho una vez por pasada. v3: se actualiza solo cuando KUBEL lo pide (lector_commit). v2: si una ficha pide entrar (sesión de ONRED a medias), entra de nuevo y la repite
 BASE = os.environ.get('ONRED_BASE', 'https://www.funcionareparaciones.es/cronosp/')  # ONRED_BASE: solo pruebas
 KUBEL_URL_DEF = 'https://hytmotuhdxbzpustnlzx.supabase.co/functions/v1/onred-recibir'
 COOKIES = os.environ.get('ONRED_COOKIES', '/var/lib/kubel-onred/cookies.txt')
@@ -315,9 +315,13 @@ def main():
                     prof = entrar(p, usuario, clave)
                     renovada = True
                     print('Sesión de ONRED renovada para las fichas')
+                    p.pedir('Iniciador.aspx?prog=cita')  # pasar por la lista, como el navegador, antes de la ficha
                     html = p.pedir(f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}')
                 if pide_login(html):
-                    raise Fallo('ONRED no deja ver esta ficha (servicio terminado o de otro profesional)')
+                    # Diagnóstico (sin valores de cookies): adónde llevó ONRED y qué cookies hay
+                    galletas = ','.join(sorted({f'{c.name}@{c.path}' for c in p.jar}))
+                    raise Fallo('ONRED no deja ver esta ficha (servicio terminado o de otro profesional) · '
+                                f'url={p.ultima.split("#")[0][-90:]} · cookies={galletas[:300]}')
                 html = con_personas(p, f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}', html)
                 tanda[n] = ligero(html)
             except Fallo as e:
