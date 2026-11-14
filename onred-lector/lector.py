@@ -102,6 +102,7 @@ class Portal:
             pass
         self.op = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(self.jar))
         self.ultima = BASE + 'Login.aspx'
+        self.diag = ''
 
     def guardar(self):
         self.jar.save(ignore_discard=True, ignore_expires=True)
@@ -162,6 +163,8 @@ def entrar(p, usuario, clave):
     f['ctl00$ContentPlaceHolder1$Login1$Password'] = clave
     f['ctl00$ContentPlaceHolder1$Login1$LoginButton'] = 'Inicia sesión'
     html = p.pedir('Login.aspx', f)
+    t = re.sub(r'<[^>]+>', ' ', ligero(html))
+    p.diag = p.ultima.split('#')[0][-70:] + ' «' + re.sub(r'\s+', ' ', htmlmod.unescape(t)).strip()[:350] + '»'
     m = re.search(r'Profesional:\s*(\d+)', html)
     if m:
         return m.group(1)
@@ -321,7 +324,7 @@ def main():
                     # Diagnóstico (sin valores de cookies): adónde llevó ONRED y qué cookies hay
                     galletas = ','.join(sorted({f'{c.name}@{c.path}' for c in p.jar}))
                     raise Fallo('ONRED no deja ver esta ficha (servicio terminado o de otro profesional) · '
-                                f'url={p.ultima.split("#")[0][-90:]} · cookies={galletas[:300]}')
+                                f'url={p.ultima.split("#")[0][-90:]} · cookies={galletas[:200]} · tras entrar: {p.diag}')
                 html = con_personas(p, f'Pantallas/Servicios/VerServicio.aspx?id=0_{n}_{prof}', html)
                 tanda[n] = ligero(html)
             except Fallo as e:
