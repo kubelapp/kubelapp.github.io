@@ -150,7 +150,8 @@
 
 <script>
 /* =====================================================================
-   KUBEL Operario v2.6 — web app (iPhone: añadir a inicio · Android: APK)
+   KUBEL Operario v2.7 — web app (iPhone: añadir a inicio · Android: APK)
+   v2.7: Cliente: «Teléfonos para llamar» con todos los teléfonos detallados por persona —asegurado, perjudicado, administrador, inquilino…— de ONRED «Personas Relacionadas», de SIGMA y los escritos sueltos en los comentarios del servicio, no solo los dos del asegurado.
    v2.6: el informe y sus fotos se guardan en el móvil (IndexedDB) antes de subir; cada foto se reintenta 5 veces;
    si no se puede, queda en cola y se sube sola (al abrir, al volver a la app, al recuperar cobertura y cada minuto).
    Las fotos del borrador también se guardan en el móvil.
@@ -171,7 +172,7 @@ const fHora = (ts) => { const d = new Date(ts); return `${dos(d.getDate())}/${do
 const dirCompleta = (p) => [p?.direccion, p?.codigo_postal, p?.poblacion].filter(Boolean).join(', ');
 const EST = { pendiente: 'Pendiente', hecho: 'Hecho', no_realizado: 'No realizado' };
 const SELECT_ASIG = `id, fecha, hora, orden, tipo, estado, notas,
-  parte:partes!asignaciones_parte_id_fkey(id, numero_servicio, asegurado, telefono, telefono2, direccion, poblacion, codigo_postal, gremio, descripcion, urgente, estado, notas_oficina, aseguradora, poliza)`;
+  parte:partes!asignaciones_parte_id_fkey(id, numero_servicio, asegurado, telefono, telefono2, telefono_perjudicado, telefono_perjudicado2, sigma_telefonos, onred_ficha, onred_bitacora, direccion, poblacion, codigo_postal, gremio, descripcion, urgente, estado, notas_oficina, aseguradora, poliza)`;
 const esIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const esAndroid = /Android/i.test(navigator.userAgent);
 const instalada = window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true || document.referrer.startsWith('android-app://');
@@ -414,10 +415,31 @@ function abrirRuta() {
 }
 
 // ---------- Ficha del parte ----------
+// Teléfonos para llamar, detallados por persona (v2.7): SIGMA, ONRED «Personas Relacionadas», casillas y los escritos sueltos en los comentarios
+function telsLlamar(p) {
+  const dig = (n) => String(n || '').replace(/\D/g, '');
+  const out = (p.sigma_telefonos || []).filter((t) => dig(t.numero).length >= 6).map((t) => ({
+    n: t.numero, d: [t.de === 'perjudicado' ? 'Perjudicado' : 'Asegurado', t.tipo, t.desde && t.hasta ? t.desde + '–' + t.hasta : ''].filter(Boolean).join(' · ') }));
+  ((p.onred_ficha && p.onred_ficha.personas) || []).forEach((r) => ['Tlf. 1', 'Tlf. 2'].forEach((k, i) => {
+    const n = String(r[k] || '').trim();
+    if (dig(n).length < 9 || /^0+$/.test(dig(n)) || out.some((t) => dig(t.n) === dig(n))) return;
+    out.push({ n, d: [r['Relación'] === 'General' ? '' : r['Relación'], r['Persona Rel.'], [r['Nombre'], r['Apellidos']].filter((x) => x && x !== '.').join(' '), r[i ? 'Tipo tlf.2' : 'Tipo tlf.1']].filter(Boolean).join(' · ') });
+  }));
+  const trozos = (v) => String(v || '').split(/\s+-\s+|[,;\/]/).map((x) => x.trim()).filter((x) => dig(x).length >= 6 && !/^0+$/.test(dig(x)));
+  [[p.telefono, 'Asegurado'], [p.telefono2, 'Asegurado'], [p.telefono_perjudicado, 'Perjudicado'], [p.telefono_perjudicado2, 'Perjudicado']]
+    .forEach(([v, d]) => trozos(v).forEach((n) => { if (!out.some((t) => dig(t.n) === dig(n))) out.push({ n, d }); }));
+  const texto = [((p.onred_bitacora) || []).map((c) => c['Texto del Comentario'] || c['Texto'] || '').join('  '),
+                 p.onred_ficha && p.onred_ficha.datos && p.onred_ficha.datos.descripcion,
+                 p.onred_ficha && p.onred_ficha.datos && p.onred_ficha.datos.obs_domicilio].filter(Boolean).join('  ');
+  (texto.match(/(?<!\d)(?:\+?34[ .\-]?)?[6789](?:[ .\-]?\d){8}(?!\d)/g) || [])
+    .map((m) => dig(m).replace(/^34(?=\d{9}$)/, '')).filter((n) => n.length === 9 && !/^90/.test(n))
+    .forEach((n) => { if (!out.some((t) => dig(t.n) === dig(n))) out.push({ n, d: 'En comentarios' }); });
+  return out;
+}
 async function pintarParte() {
   const a = estado.asig; if (!a) return history.back();
   const p = a.parte;
-  const tels = []; [p.telefono, p.telefono2].filter(Boolean).forEach((v) => String(v).split(/\s+-\s+|[,;\/]/).map((x) => x.trim()).filter(Boolean).forEach((x) => { if (!tels.includes(x)) tels.push(x); }));
+  const tels = telsLlamar(p);
   const dir = dirCompleta(p);
   $('#raiz').innerHTML = `
     <div class="cab"><div class="lado"><button onclick="volver()">‹ Volver</button></div>
@@ -429,7 +451,7 @@ async function pintarParte() {
       <div class="seccion"><h4>Dirección</h4><div class="grande">${esc(dir)}</div>
         <button class="boton" style="margin-top:12px" onclick="abrirMapa('https://www.google.com/maps/dir/?api=1&destination='+encodeURIComponent(${esc(JSON.stringify(dir))})+'&travelmode=driving')">🧭&nbsp; Cómo llegar</button></div>
       <div class="seccion"><h4>Cliente</h4><div class="grande">${esc(p.asegurado || 'Sin nombre')}</div>
-        ${tels.length ? tels.map((t) => `<a class="tel" href="tel:${esc(t.replace(/\s/g, ''))}"><span>📞&nbsp; ${esc(t)}</span><span>Llamar</span></a>`).join('') : '<div class="suave">Sin teléfono</div>'}</div>
+        ${tels.length ? tels.map((t) => `<a class="tel" href="tel:${esc(String(t.n).replace(/\D/g, ''))}"><span>📞&nbsp; ${esc(t.n)}${t.d ? `<br><small class="suave">${esc(t.d)}</small>` : ''}</span><span>Llamar</span></a>`).join('') : '<div class="suave">Sin teléfono</div>'}</div>
       ${p.aseguradora || p.poliza ? `<div class="seccion"><h4>Seguro</h4>${p.aseguradora ? `<div class="grande">${esc(p.aseguradora)}</div>` : ''}${p.poliza ? `<div class="suave">Póliza: ${esc(p.poliza)}</div>` : ''}</div>` : ''}
       ${p.descripcion ? `<div class="seccion"><h4>Descripción del trabajo</h4><div class="pre">${esc(p.descripcion)}</div></div>` : ''}
       ${a.notas || p.notas_oficina ? `<div class="seccion"><h4>Notas de la oficina</h4>${a.notas ? `<div class="pre">${esc(a.notas)}</div>` : ''}${p.notas_oficina ? `<div class="pre" style="${a.notas ? 'margin-top:8px' : ''}">${esc(p.notas_oficina)}</div>` : ''}</div>` : ''}
