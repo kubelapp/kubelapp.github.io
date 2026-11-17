@@ -373,9 +373,9 @@
       <h2>Eventos SIGMA</h2>
       <span class="esp"></span>
       <button class="sec" onclick="modalEvento()">+ Añadir evento</button>
-      <button class="sec" onclick="excelEv('VLL')" title="Excel para el delegado de SIGMA VALLADOLID (periodo elegido)">⬇ Excel VLL</button>
-      <button class="sec" onclick="excelEv('PAL')" title="Excel para el delegado de SIGMA PALENCIA (periodo elegido)">⬇ Excel PAL</button>
-      <button onclick="marcarEnviadoEv(this)" title="Marca como mandados al delegado los eventos del periodo y cuenta elegidos">✓ Marcar enviado</button>
+      <button class="sec" onclick="excelEv('VLL')" title="Excel para el delegado de SIGMA VALLADOLID (periodo elegido o «Todos los periodos»)">⬇ Excel VLL</button>
+      <button class="sec" onclick="excelEv('PAL')" title="Excel para el delegado de SIGMA PALENCIA (periodo elegido o «Todos los periodos»)">⬇ Excel PAL</button>
+      <button onclick="marcarEnviadoEv(this)" title="Marca como mandados al delegado los eventos sin enviar que ves (periodo o todos, y cuenta)">✓ Marcar enviado</button>
     </div>
     <div class="filtros">
       <select id="ev-per" onchange="pintarEv()" title="Periodo de envío"></select>
@@ -1674,11 +1674,12 @@ async function enviadoEv(id, si) {
 }
 
 async function marcarEnviadoEv(btn) {
-  const per = $('#ev-per').value, cta = $('#ev-cta').value;
-  if (!per) return aviso('Elige primero un periodo');
-  const ids = evFilas.filter((x) => x.periodo === per && (!cta || x.cuenta === cta) && !x.enviado_en).map((x) => x.id);
-  if (!ids.length) return aviso('No hay eventos sin enviar en ' + nombreMes(per) + (cta ? ' · ' + cta : ''));
-  if (!confirm(`¿Marcar como enviados al delegado ${ids.length} evento${ids.length === 1 ? '' : 's'} de ${nombreMes(per)}${cta ? ' (' + CTA_EV[cta] + ')' : ' (VLL y PAL)'}?`)) return;
+  const per = $('#ev-per').value, cta = $('#ev-cta').value;   // per '' = todos los periodos
+  const pasa = filtroEv();   // mismo alcance que la tabla (periodo o todos, cuenta, tipo, envío)
+  const alcance = (per ? nombreMes(per) : 'todos los periodos') + (cta ? ' · ' + CTA_EV[cta] : ' (VLL y PAL)');
+  const ids = evFilas.filter((x) => pasa(x) && !x.enviado_en).map((x) => x.id);
+  if (!ids.length) return aviso('No hay eventos sin enviar en ' + alcance);
+  if (!confirm(`¿Marcar como enviados al delegado ${ids.length} evento${ids.length === 1 ? '' : 's'} de ${alcance}?`)) return;
   btn.disabled = true;
   const v = new Date().toISOString();
   const { error } = await sb.from('eventos_sigma').update({ enviado_en: v }).in('id', ids);
@@ -1729,24 +1730,28 @@ async function guardarEvento() {
 
 async function excelEv(cta) {
   try {
-    const per = $('#ev-per').value;
-    if (!per) return aviso('Elige primero un periodo');
-    const filas = evFilas.filter((x) => x.periodo === per && x.cuenta === cta)
-      .sort((a, b) => (EV_ORDEN[a.tipo] ?? 9) - (EV_ORDEN[b.tipo] ?? 9) || (a.fecha_visita || '').localeCompare(b.fecha_visita || ''));
-    if (!filas.length) return aviso(`No hay eventos de ${CTA_EV[cta]} en ${nombreMes(per)}`);
+    const per = $('#ev-per').value;   // '' = todos los periodos
+    const pasa = filtroEv('cta');     // respeta periodo (o todos), tipo y envío; la cuenta la fija el botón
+    const filas = evFilas.filter((x) => x.cuenta === cta && pasa(x))
+      .sort((a, b) => (a.periodo || '').localeCompare(b.periodo || '') || (EV_ORDEN[a.tipo] ?? 9) - (EV_ORDEN[b.tipo] ?? 9) || (a.fecha_visita || '').localeCompare(b.fecha_visita || ''));
+    if (!filas.length) return aviso(`No hay eventos de ${CTA_EV[cta]}${per ? ' en ' + nombreMes(per) : ''} con estos filtros`);
     const sinF = filas.filter((x) => !x.fecha_visita).length;
     if (sinF && !confirm(`${sinF} evento${sinF === 1 ? '' : 's'} sin día de visita. ¿Descargar el Excel igualmente?`)) return;
     if (!window.XLSX) await cargarScript('https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js');
-    const r = evRango(per);
-    const cab = ['Nº SERVICIO', 'EVENTO', 'DÍA DE VISITA', 'DIRECCIÓN', 'POBLACIÓN'];
-    const datos = filas.map((x) => [x.servicio || '', x.tipo, x.fecha_visita ? new Date(x.fecha_visita + 'T00:00:00') : '', x.direccion || '', x.poblacion || '']);
+    const titulo = per ? (() => { const r = evRango(per); return `Eventos del ${evFechaL(r.desde)} al ${evFechaL(r.hasta)}`; })() : 'Eventos de todos los periodos';
+    const cab = per ? ['Nº SERVICIO', 'EVENTO', 'DÍA DE VISITA', 'DIRECCIÓN', 'POBLACIÓN']
+                    : ['PERIODO', 'Nº SERVICIO', 'EVENTO', 'DÍA DE VISITA', 'DIRECCIÓN', 'POBLACIÓN'];
+    const datos = filas.map((x) => {
+      const fila = [x.servicio || '', x.tipo, x.fecha_visita ? new Date(x.fecha_visita + 'T00:00:00') : '', x.direccion || '', x.poblacion || ''];
+      return per ? fila : [nombreMes(x.periodo || '') || '—', ...fila];
+    });
     const nT = (t) => filas.filter((x) => x.tipo === t).length;
-    const aoa = [[`KUBEL DISEÑO, SL · ${CTA_EV[cta]} · Eventos del ${evFechaL(r.desde)} al ${evFechaL(r.hasta)}`], [], cab, ...datos, [],
+    const aoa = [[`KUBEL DISEÑO, SL · ${CTA_EV[cta]} · ${titulo}`], [], cab, ...datos, [],
       ['URGENCIAS', nT('URGENCIA')], ['VISITAS FALLIDAS', nT('VISITA FALLIDA')], ['DESATASCOS CAMIÓN CUBA', nT('DESATASCO CAMIÓN CUBA')], ['MATERIAL', nT('MATERIAL')], ['TOTAL EVENTOS', filas.length]];
     const ws = XLSX.utils.aoa_to_sheet(aoa, { cellDates: true, dateNF: 'dd/mm/yyyy' });
-    ws['!cols'] = [14, 24, 14, 42, 22].map((w) => ({ wch: w }));
+    ws['!cols'] = (per ? [14, 24, 14, 42, 22] : [16, 14, 24, 14, 42, 22]).map((w) => ({ wch: w }));
     const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Eventos');
-    XLSX.writeFile(wb, `KUBEL-eventos-${CTA_EV[cta].replace(' ', '-')}-${per}.xlsx`);
+    XLSX.writeFile(wb, `KUBEL-eventos-${CTA_EV[cta].replace(' ', '-')}-${per || 'todos'}.xlsx`);
     aviso('Excel descargado. Cuando lo mandes, pulsa «✓ Marcar enviado».');
   } catch (e) { aviso('Error: ' + mensaje(e)); }
 }
